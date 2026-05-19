@@ -64,8 +64,9 @@ var YamlOnlyKeys = map[string]bool{
 	"backup.git-repo": true,
 
 	// Dolt server settings
-	"dolt.shared-server": true, // Shared Dolt server at ~/.beads/shared-server/ (GH#2377)
-	"dolt.max-conns":     true, // Connection pool size override (default 10, GH#3140)
+	"dolt.shared-server":    true, // Shared Dolt server at ~/.beads/shared-server/ (GH#2377)
+	"dolt.max-conns":        true, // Connection pool size override (default 10, GH#3140)
+	"dolt.sync-cli-remotes": true, // Re-register CLI remotes into SQL on store open (default true)
 
 	// Secrets: tokens and API keys must NOT be stored in the Dolt database
 	// because that data is pushed to remotes, triggering secret-scanning

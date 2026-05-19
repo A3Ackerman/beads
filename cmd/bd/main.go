@@ -987,6 +987,7 @@ var rootCmd = &cobra.Command{
 		// Keep standalone CLI auto-start behavior centralized so doctor and
 		// other helper paths stay in lockstep with the main command path.
 		dolt.ApplyCLIAutoStart(beadsDir, doltCfg)
+		dolt.ApplyCLIRemoteSync(beadsDir, doltCfg)
 
 		// Default auto-commit based on mode when the user hasn't set a value:
 		// - Server mode: OFF — the server handles commits via its own transaction
