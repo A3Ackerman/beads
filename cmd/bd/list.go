@@ -396,6 +396,8 @@ var listCmd = &cobra.Command{
 
 		// Template filtering
 		includeTemplates, _ := cmd.Flags().GetBool("include-templates")
+		jsonMinimal, _ := cmd.Flags().GetBool("json-minimal")
+		wispTier, _ := cmd.Flags().GetBool("wisp-tier")
 
 		// Gate filtering (bd-7zka.2)
 		includeGates, _ := cmd.Flags().GetBool("include-gates")
@@ -815,6 +817,9 @@ var listCmd = &cobra.Command{
 		if wispType != nil {
 			filter.WispType = wispType
 		}
+		if wispTier {
+			filter.WispTierOnly = true
+		}
 
 		// Time-based scheduling filters (GH#820)
 		if deferredFlag {
@@ -965,6 +970,12 @@ var listCmd = &cobra.Command{
 		}
 
 		if jsonOutput {
+			if jsonMinimal {
+				outputJSON(issues)
+				printTruncationHint(truncated, effectiveLimit)
+				return
+			}
+
 			// Get labels and dependency counts in bulk (single query instead of N queries)
 			issueIDs := make([]string, len(issues))
 			for i, issue := range issues {
@@ -1116,6 +1127,10 @@ func init() {
 
 	// Template filtering: exclude templates by default
 	listCmd.Flags().Bool("include-templates", false, "Include template molecules in output")
+	listCmd.Flags().Bool("json-minimal", false, "Output raw issue JSON without dependency/comment/count hydration")
+	_ = listCmd.Flags().MarkHidden("json-minimal")
+	listCmd.Flags().Bool("wisp-tier", false, "Read only the wisp/no-history storage tier")
+	_ = listCmd.Flags().MarkHidden("wisp-tier")
 
 	// Gate filtering: exclude gate issues by default (bd-7zka.2)
 	listCmd.Flags().Bool("include-gates", false, "Include gate issues in output (normally hidden)")
