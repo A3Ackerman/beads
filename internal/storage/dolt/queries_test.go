@@ -2,6 +2,7 @@ package dolt
 
 import (
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -708,6 +709,35 @@ func TestGetReadyWork_IncludeEphemeralPropagatesWispSearchError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "search wisps (ready work)") {
 		t.Fatalf("expected ready-work wisp error context, got %v", err)
+	}
+}
+
+func TestGetReadyWork_LimitIncludeEphemeralSkipsWispsWhenPersistentFillsLimit(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	ctx, cancel := testContext(t)
+	defer cancel()
+
+	if err := store.CreateIssue(ctx, &types.Issue{
+		ID:        "rw-limit-persistent-ready",
+		Title:     "Ready control",
+		Status:    types.StatusOpen,
+		Priority:  1,
+		IssueType: types.TypeTask,
+	}, "tester"); err != nil {
+		t.Fatalf("create ready issue: %v", err)
+	}
+	if _, err := store.db.ExecContext(ctx, "ALTER TABLE wisps DROP COLUMN title"); err != nil {
+		t.Fatalf("damage wisps table for regression test: %v", err)
+	}
+
+	work, err := store.GetReadyWork(ctx, types.WorkFilter{IncludeEphemeral: true, Limit: 1})
+	if err != nil {
+		t.Fatalf("limited include-ephemeral ready work should not scan wisps after limit is filled: %v", err)
+	}
+	if got := issueIDs(work); !reflect.DeepEqual(got, []string{"rw-limit-persistent-ready"}) {
+		t.Fatalf("limited include-ephemeral IDs = %v, want persistent result only", got)
 	}
 }
 

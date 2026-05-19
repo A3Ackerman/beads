@@ -282,19 +282,19 @@ func GetReadyWorkInTx(
 
 	// When IncludeEphemeral is set, also query the wisps table.
 	if filter.IncludeEphemeral {
-		wispFilter := readyWorkWispIssueFilter(filter)
-		// Ready-only wisp predicates are applied after search, so avoid limiting
-		// before that filtering can drop non-ready candidates.
-		wispFilter.Limit = 0
-		wisps, wErr := searchTableInTx(ctx, tx, "", wispFilter, WispsFilterTables)
+		remaining := 0
+		if filter.Limit > 0 {
+			remaining = filter.Limit - len(ordered)
+			if remaining <= 0 {
+				return ordered[:filter.Limit], nil
+			}
+		}
+
+		wisps, wErr := getReadyWispsInTx(ctx, tx, filter, remaining)
 		if wErr != nil {
 			if isTableNotExistError(wErr) {
 				return ordered, nil
 			}
-			return nil, fmt.Errorf("search wisps (ready work): %w", wErr)
-		}
-		wisps, wErr = filterReadyWispsInTx(ctx, tx, filter, wisps)
-		if wErr != nil {
 			return nil, wErr
 		}
 		ordered = append(ordered, wisps...)
@@ -303,6 +303,124 @@ func GetReadyWorkInTx(
 		}
 	}
 
+	return ordered, nil
+}
+
+func getReadyWispsInTx(ctx context.Context, tx *sql.Tx, filter types.WorkFilter, remaining int) ([]*types.Issue, error) {
+	wispFilter := readyWorkWispIssueFilter(filter)
+	if remaining <= 0 {
+		// Ready-only wisp predicates are applied after search, so avoid limiting
+		// before that filtering can drop non-ready candidates.
+		wispFilter.Limit = 0
+		wisps, err := searchTableInTx(ctx, tx, "", wispFilter, WispsFilterTables)
+		if err != nil {
+			return nil, fmt.Errorf("search wisps (ready work): %w", err)
+		}
+		wisps, err = filterReadyWispsInTx(ctx, tx, filter, wisps)
+		if err != nil {
+			return nil, err
+		}
+		return wisps, nil
+	}
+
+	pageSize := readyWorkPageSize(remaining)
+	ready := make([]*types.Issue, 0, remaining)
+	for offset := 0; len(ready) < remaining; offset += pageSize {
+		pageIDs, err := queryReadyWispIssueIDPage(ctx, tx, wispFilter, pageSize, offset)
+		if err != nil {
+			return nil, fmt.Errorf("search wisps (ready work): %w", err)
+		}
+		if len(pageIDs) == 0 {
+			break
+		}
+
+		pageWisps, err := getWispIssuesByIDsInOrderInTx(ctx, tx, pageIDs)
+		if err != nil {
+			return nil, fmt.Errorf("search wisps (ready work): %w", err)
+		}
+		pageReady, err := filterReadyWispsInTx(ctx, tx, filter, pageWisps)
+		if err != nil {
+			return nil, err
+		}
+		for _, wisp := range pageReady {
+			ready = append(ready, wisp)
+			if len(ready) >= remaining {
+				break
+			}
+		}
+		if len(pageIDs) < pageSize {
+			break
+		}
+	}
+	return ready, nil
+}
+
+func queryReadyWispIssueIDPage(ctx context.Context, tx *sql.Tx, filter types.IssueFilter, limit, offset int) ([]string, error) {
+	fromSQL, labelWhere, labelArgs, labelDriven, filterForClauses := buildLabelDrivenSearch(filter, WispsFilterTables)
+	whereClauses, args, err := BuildIssueFilterClauses("", filterForClauses, WispsFilterTables)
+	if err != nil {
+		return nil, err
+	}
+	if len(labelWhere) > 0 {
+		whereClauses = append(labelWhere, whereClauses...)
+		args = append(labelArgs, args...)
+	}
+
+	whereSQL := ""
+	if len(whereClauses) > 0 {
+		whereSQL = "WHERE " + strings.Join(whereClauses, " AND ")
+	}
+
+	selectSQL := "SELECT "
+	if labelDriven {
+		selectSQL = "SELECT DISTINCT "
+	}
+	//nolint:gosec // G201: SQL fragments are fixed table/column names and parameterized filters; limit/offset are ints.
+	query := fmt.Sprintf(`%sid FROM %s %s ORDER BY priority ASC, created_at DESC, id ASC LIMIT %d OFFSET %d`,
+		selectSQL, fromSQL, whereSQL, limit, offset)
+
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("search wisps: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("search wisps: scan id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("search wisps: rows: %w", err)
+	}
+	return ids, nil
+}
+
+func getWispIssuesByIDsInOrderInTx(ctx context.Context, tx *sql.Tx, ids []string) ([]*types.Issue, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	wispSet := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		wispSet[id] = struct{}{}
+	}
+	issues, err := GetIssuesByIDsInTx(ctx, tx, ids, wispSet)
+	if err != nil {
+		return nil, err
+	}
+	issueMap := make(map[string]*types.Issue, len(issues))
+	for _, issue := range issues {
+		issueMap[issue.ID] = issue
+	}
+	ordered := make([]*types.Issue, 0, len(ids))
+	for _, id := range ids {
+		if issue, ok := issueMap[id]; ok {
+			ordered = append(ordered, issue)
+		}
+	}
 	return ordered, nil
 }
 
