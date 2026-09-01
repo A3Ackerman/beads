@@ -330,10 +330,21 @@ func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfi
 		}
 	}
 
-	// Pool per-I/O deadlines: caller override > env var > config.yaml > default
-	// (10s, see buildServerDSN). The default fast-fail is right for healthy
-	// local servers; overloaded shared-server deployments raise it so ordinary
-	// queries stop dying with "i/o timeout" under load (bd-vz0y9).
+	ApplyPoolTimeouts(cfg)
+
+	return nil
+}
+
+// ApplyPoolTimeouts fills the shared pool's per-I/O deadlines when the caller
+// left them unset: caller override > env var > config.yaml > default (10s, see
+// buildServerDSN). The default fast-fail is right for healthy local servers;
+// overloaded shared-server deployments raise it so ordinary queries stop dying
+// with "i/o timeout" under load (bd-vz0y9). It is idempotent, and it runs from
+// New (applyConfigDefaults) so every open path honors the knob — the CLI's own
+// store open and bd serve's provider hand-build their Config and never pass
+// through applyResolvedConfig, which is how the knob shipped in #5089 stayed
+// inert for every bd command in server mode (gastownhall/beads#6144).
+func ApplyPoolTimeouts(cfg *Config) {
 	if cfg.PoolReadTimeout == 0 {
 		cfg.PoolReadTimeout = timeoutFromEnv("BEADS_DOLT_POOL_READ_TIMEOUT", 0)
 	}
@@ -346,8 +357,6 @@ func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfi
 	if cfg.PoolWriteTimeout == 0 {
 		cfg.PoolWriteTimeout = parseTimeout(config.GetString("dolt.pool-write-timeout"), 0)
 	}
-
-	return nil
 }
 
 // applyCentralConfigDefaults loads the central server config from
