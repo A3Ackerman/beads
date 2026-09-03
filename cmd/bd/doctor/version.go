@@ -253,9 +253,6 @@ func fetchLatestGitHubRelease() (string, error) {
 	return version, nil
 }
 
-// CompareVersions compares two semantic version strings.
-// Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
-// Handles versions like "0.20.1", "1.2.3", etc.
 // stripVersionPrefix drops the canonical "v" a Go module version carries
 // ("v1.2.3", or the pseudo-version a build stamped from `go install
 // module@version` reports). bd writes its own main.Version into
@@ -266,6 +263,9 @@ func stripVersionPrefix(version string) string {
 	return strings.TrimPrefix(strings.TrimSpace(version), "v")
 }
 
+// CompareVersions compares two semantic version strings.
+// Returns: -1 if v1 < v2, 0 if v1 == v2, 1 if v1 > v2
+// Handles versions like "0.20.1", "1.2.3", etc.
 func CompareVersions(v1, v2 string) int {
 	// Split versions into parts
 	parts1 := strings.Split(stripVersionPrefix(v1), ".")
