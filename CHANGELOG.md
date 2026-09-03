@@ -187,8 +187,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and go straight to `New`, so every `bd` command kept the built-in 10 s pool
   deadline whatever the knob said — on a large shared server that is what made
   `bd close` of a bead with dependents die in its recompute with `i/o timeout`
-  and no relief valve. The ladder now runs from the constructor every open path
-  shares ([#6144](https://github.com/gastownhall/beads/issues/6144)).
+  and no relief valve. The ladder now runs from the constructor every DoltStore
+  open shares — the CLI's store, `bd serve`'s store provider and library
+  callers of `New`/`NewFromConfig*`; `bd serve`'s HTTP data path builds its own
+  DSN without pool deadlines and is unchanged
+  ([#6144](https://github.com/gastownhall/beads/issues/6144)). Note for
+  operators of loaded servers: the documented precedence now reaches `bd
+  import` as well — it used to inherit the 5 m long-read fallback
+  unconditionally because the CLI's knob value was always 0, so a
+  `BEADS_DOLT_POOL_READ_TIMEOUT` set below that now bounds import too; size the
+  knob for your largest import, or leave it unset for the fallback.
 
 - **`bd prime` says when it could NOT read the memory plane**
   ([#5877](https://github.com/gastownhall/beads/issues/5877)). A broken or

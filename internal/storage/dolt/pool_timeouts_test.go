@@ -1,13 +1,14 @@
 package dolt
 
 import (
+	"github.com/steveyegge/beads/internal/config"
 	"strings"
 	"testing"
 	"time"
 )
 
 // TestApplyConfigDefaultsAppliesPoolTimeoutLadder pins the pool-deadline knobs
-// at the seam every open path shares. applyResolvedConfig applied the
+// at the seam every DoltStore open shares. applyResolvedConfig applied the
 // BEADS_DOLT_POOL_READ_TIMEOUT / dolt.pool-read-timeout ladder (#5089), but
 // only callers of NewFromConfig* pass through it: the CLI's own store open and
 // bd serve's provider hand-build their Config and go straight to New →
@@ -47,6 +48,8 @@ func TestApplyConfigDefaultsAppliesPoolTimeoutLadder(t *testing.T) {
 	t.Run("unset knobs leave the built-in default in place", func(t *testing.T) {
 		t.Setenv("BEADS_DOLT_POOL_READ_TIMEOUT", "")
 		t.Setenv("BEADS_DOLT_POOL_WRITE_TIMEOUT", "")
+		config.ResetForTesting() // the config.yaml rung reads package state, not just env
+		t.Cleanup(config.ResetForTesting)
 		cfg := &Config{ServerMode: true, Database: "ladder", Path: t.TempDir()}
 
 		applyConfigDefaults(cfg)
