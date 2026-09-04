@@ -13,7 +13,7 @@ import (
 // of `bd ready --parent` consumes the descendant set the issues leg already
 // computed instead of walking the parent's descendants again. The walk is the
 // dominant cost of a scoped ready call, and this leg used to run it a second
-// time on every call (be-qfm). The mock scripts exactly the queries the leg
+// time on every call (#6129). The mock scripts exactly the queries the leg
 // is allowed to run for a scoped filter — the parented-ID probes and the
 // blocked-wisp filter — so a `WITH RECURSIVE` descendant walk here is an
 // unexpected query and fails the test.

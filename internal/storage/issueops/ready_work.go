@@ -26,7 +26,7 @@ type readyWorkPredicates struct {
 	deferredChildIDs []string
 	// parentDescendantIDs is the ParentID walk computed once here and reused
 	// by the wisp leg; GetDescendantIDsInTx is the dominant cost of
-	// `bd ready --parent` and ran once per leg before be-qfm.
+	// `bd ready --parent` and ran once per leg before #6129.
 	parentDescendantIDs []string
 }
 

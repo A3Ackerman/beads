@@ -2204,13 +2204,22 @@ func RunReaderReadyParentScopesToItsTransitiveDescendants(t *testing.T, ctx cont
 	adopted := readerID(fixture, "rdypar", "adopted")
 	decoy := parent + "x"
 
+	// One descendant lives in the wisps plane: the wisp leg of Ready receives
+	// the parent's descendant set from the issues leg (#6129) rather than
+	// walking for itself, and a hand-off that arrives nil drops it silently.
+	wispChild := readerID(fixture, "rdypar", "wisp")
+
 	for _, member := range []string{parent, child, grandchild, dotted, adopted, decoy} {
 		seedReaderIssue(t, ctx, fixture, readerIssue(member, types.TypeTask, ""))
 	}
+	wispIssue := readerIssue(wispChild, types.TypeTask, "")
+	wispIssue.Ephemeral = true
+	seedReaderWisp(t, ctx, fixture, wispIssue)
 	for _, edge := range []*types.Dependency{
 		{IssueID: child, DependsOnID: parent, Type: types.DepParentChild},
 		{IssueID: grandchild, DependsOnID: child, Type: types.DepParentChild},
 		{IssueID: adopted, DependsOnID: parent, Type: types.DepParentChild},
+		{IssueID: wispChild, DependsOnID: child, Type: types.DepParentChild},
 	} {
 		if err := fixture.AddDependency(ctx, edge, "seed"); err != nil {
 			t.Fatalf("seed edge %s -> %s: %v", edge.IssueID, edge.DependsOnID, err)
@@ -2222,8 +2231,15 @@ func RunReaderReadyParentScopesToItsTransitiveDescendants(t *testing.T, ctx cont
 		t.Fatalf("Ready --parent: %v", err)
 	}
 	// The parent itself is not its own descendant, and neither the sibling
-	// decoy nor anything else in the workspace belongs to this answer.
+	// decoy nor anything else in the workspace belongs to this answer; the
+	// wisp descendant stays out until the ephemeral gate opens.
 	assertReaderPageIDSet(t, "Ready --parent", page, []string{child, grandchild, dotted, adopted})
+
+	page, err = fixture.Reader.Ready(ctx, publicops.ReadyRequest{ParentID: parent, Sort: "oldest", IncludeEphemeral: true})
+	if err != nil {
+		t.Fatalf("Ready --parent --include-ephemeral: %v", err)
+	}
+	assertReaderPageIDSet(t, "Ready --parent --include-ephemeral", page, []string{child, grandchild, dotted, adopted, wispChild})
 }
 
 // RunReaderListParentReachesEveryDescendantAndOnlyItsOwn is the same field on
