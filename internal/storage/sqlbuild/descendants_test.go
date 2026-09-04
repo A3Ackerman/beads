@@ -30,6 +30,24 @@ func TestDescendantWalkQueryRecursesOffBaseTables(t *testing.T) {
 		if !strings.Contains(q, "JOIN dependencies e ON e.depends_on_issue_id = d.id AND e.type = 'parent-child'") {
 			t.Errorf("includeWisps=%v: missing the indexed issue-target recursive member:\n%s", includeWisps, q)
 		}
+		// The per-column IS NULL guards are what reproduce COALESCE precedence
+		// exactly: member k fires only when target columns 0..k-1 are NULL, so
+		// a row with two non-NULL targets (possible on a store that never ran
+		// 0041's ck_dep_one_target) is walked once, not once per member. Three
+		// guards per table on the anchors and three on the recursive members.
+		tables := 1
+		if includeWisps {
+			tables = 2
+		}
+		if got := strings.Count(q, " IS NULL"); got != 2*3*tables {
+			t.Errorf("includeWisps=%v: %d IS NULL guards, want %d (3 anchor + 3 recursive per table)", includeWisps, got, 2*3*tables)
+		}
+		if !strings.Contains(q, "WHERE type = 'parent-child' AND depends_on_external = ? AND depends_on_issue_id IS NULL AND depends_on_wisp_id IS NULL") {
+			t.Errorf("includeWisps=%v: the external anchor is not guarded by both higher-precedence columns:\n%s", includeWisps, q)
+		}
+		if !strings.Contains(q, "WHERE (? <= 0 OR d.depth < ?) AND e.depends_on_issue_id IS NULL AND e.depends_on_wisp_id IS NULL") {
+			t.Errorf("includeWisps=%v: the external recursive member is not guarded by both higher-precedence columns:\n%s", includeWisps, q)
+		}
 		if got := strings.Count(q, "LOCATE(CONCAT(',', e.issue_id, ','), d.path) = 0"); got != recursiveMembers(includeWisps) {
 			t.Errorf("includeWisps=%v: cycle guard on %d of %d recursive members", includeWisps, got, recursiveMembers(includeWisps))
 		}
