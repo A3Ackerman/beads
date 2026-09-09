@@ -323,7 +323,7 @@ func applyResolvedConfig(ctx context.Context, beadsDir string, fileCfg *configfi
 		}
 	}
 	if cfg.MaxOpenConns == 0 {
-		if v := config.GetString("dolt.max-conns"); v != "" {
+		if v := poolSettingFromConfig(cfg, "dolt.max-conns"); v != "" {
 			if n, err := strconv.Atoi(v); err == nil && n > 0 {
 				cfg.MaxOpenConns = n
 			}
@@ -349,20 +349,21 @@ func applyPoolTimeouts(cfg *Config) {
 		cfg.PoolReadTimeout = timeoutFromEnv("BEADS_DOLT_POOL_READ_TIMEOUT", 0)
 	}
 	if cfg.PoolReadTimeout == 0 {
-		cfg.PoolReadTimeout = parseTimeout(poolTimeoutFromConfig(cfg, "dolt.pool-read-timeout"), 0)
+		cfg.PoolReadTimeout = parseTimeout(poolSettingFromConfig(cfg, "dolt.pool-read-timeout"), 0)
 	}
 	if cfg.PoolWriteTimeout == 0 {
 		cfg.PoolWriteTimeout = timeoutFromEnv("BEADS_DOLT_POOL_WRITE_TIMEOUT", 0)
 	}
 	if cfg.PoolWriteTimeout == 0 {
-		cfg.PoolWriteTimeout = parseTimeout(poolTimeoutFromConfig(cfg, "dolt.pool-write-timeout"), 0)
+		cfg.PoolWriteTimeout = parseTimeout(poolSettingFromConfig(cfg, "dolt.pool-write-timeout"), 0)
 	}
 }
 
-// poolTimeoutFromConfig reads a pool-deadline key from the initialized config
-// and, like the auto-start ladder above, falls back to the .beads directory's
-// own config.yaml for library consumers that never called config.Initialize.
-func poolTimeoutFromConfig(cfg *Config, key string) string {
+// poolSettingFromConfig reads a pool key (a deadline or the pool size) from the
+// initialized config and, like the auto-start ladder above, falls back to the
+// .beads directory's own config.yaml for library consumers that never called
+// config.Initialize (gastownhall/beads#6443).
+func poolSettingFromConfig(cfg *Config, key string) string {
 	if v := config.GetString(key); v != "" {
 		return v
 	}

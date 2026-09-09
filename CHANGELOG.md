@@ -180,6 +180,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`dolt.max-conns` now reaches library consumers that never call
+  `config.Initialize()`.** The key was read through the global config getter
+  alone, so an in-process open through the root package (an orchestrator, for
+  instance) kept the built-in pool size whatever `.beads/config.yaml` said. It
+  now falls back to the project's own `config.yaml` the way the pool deadline
+  keys and `dolt.auto-start` do (#6443).
 - **`BEADS_DOLT_POOL_READ_TIMEOUT` / `dolt.pool-read-timeout` (and the write
   twins) now apply to every `bd` command in server mode.** The knobs shipped in
   #5089, but their env/config ladder ran only for callers of `NewFromConfig*`;
