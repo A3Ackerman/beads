@@ -376,6 +376,15 @@ func unmarkAllBlockedSQL(table, alias, depTable string) string {
 // lookups instead of per outer row (bd-t9ypt). Full repair, doctor count and
 // the batched templates (scoped, see below) now share this one definition.
 //
+// The parent-child legs read the parent's STORED is_blocked, and additionally
+// require the parent to be neither closed nor pinned. On settled data the
+// status guard is redundant — BlockedStateInvariant's first clause keeps such a
+// row at 0 — but the stored flag is derived state that a merge can leave stale,
+// and a closed parent carrying an orphaned 1 must not hand it down: nothing
+// would unmark the children until somebody repaired the parent. With the
+// guard, the open rows below a closed node settle from its status, whether or
+// not its own flag was ever cleared.
+//
 //nolint:gosec // G201: depTable is constant; waitsForGateBlockedSQL is a constant template.
 func shouldBeBlockedIDsUnionSQL(depTable string) string {
 	return shouldBeBlockedIDsUnionScopedSQL(depTable, "")
@@ -422,12 +431,14 @@ func shouldBeBlockedIDsUnionScopedSQL(depTable, scope string) string {
 		WHERE d.issue_id IS NOT NULL %[3]s
 		  AND d.type = 'parent-child'
 		  AND p.is_blocked = 1
+		  AND p.status <> 'closed' AND p.status <> 'pinned'
 		UNION
 		SELECT d.issue_id FROM %[1]s d
 		JOIN wisps p ON p.id = d.depends_on_wisp_id
 		WHERE d.issue_id IS NOT NULL %[3]s
 		  AND d.type = 'parent-child'
 		  AND p.is_blocked = 1
+		  AND p.status <> 'closed' AND p.status <> 'pinned'
 		UNION
 		SELECT d.issue_id FROM (
 		  SELECT DISTINCT d.issue_id, d.depends_on_issue_id, d.depends_on_wisp_id, d.metadata

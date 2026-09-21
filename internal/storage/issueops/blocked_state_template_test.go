@@ -93,3 +93,36 @@ func TestExpandBatchTemplateSingleOccurrenceDegrades(t *testing.T) {
 		t.Errorf("arg count = %d, want %d", len(stmtArgs), len(args))
 	}
 }
+
+// The parent-child legs of the should-be-blocked union must refuse a closed or
+// pinned parent, in both parent planes and in every statement built on the
+// union. The behavior is pinned against a real engine in the embeddeddolt suite
+// (TestClosedParentWithStaleFlagDoesNotPropagate); this is the fast-tier tripwire
+// for a leg that loses the guard, which the prefix-matching sqlmock suite
+// cannot see.
+func TestParentChildLegsRefuseClosedAndPinnedParents(t *testing.T) {
+	const guarded = "AND p.is_blocked = 1\n\t\t  AND p.status <> 'closed' AND p.status <> 'pinned'"
+
+	statements := batchedTemplates()
+	for _, tc := range []struct{ table, alias, depTable string }{
+		{"issues", "i", "dependencies"},
+		{"wisps", "w", "wisp_dependencies"},
+	} {
+		statements["markAllBlockedSQL/"+tc.table] = markAllBlockedSQL(tc.table, tc.alias, tc.depTable)
+		statements["unmarkAllBlockedSQL/"+tc.table] = unmarkAllBlockedSQL(tc.table, tc.alias, tc.depTable)
+		// The doctor count carries the union twice: mark- and unmark-eligible.
+		statements["countStaleIsBlockedSQL/"+tc.table] = countStaleIsBlockedSQL(tc.table, tc.alias, tc.depTable)
+	}
+
+	for name, stmt := range statements {
+		t.Run(name, func(t *testing.T) {
+			legs := strings.Count(stmt, "p.is_blocked = 1")
+			if legs == 0 || legs%2 != 0 {
+				t.Fatalf("parent-child leg count = %d, want a positive even number (issue-parent and wisp-parent per union)", legs)
+			}
+			if got := strings.Count(stmt, guarded); got != legs {
+				t.Errorf("%d of %d parent-child legs carry the closed/pinned parent guard", got, legs)
+			}
+		})
+	}
+}
