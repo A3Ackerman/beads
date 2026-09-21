@@ -381,9 +381,10 @@ func unmarkAllBlockedSQL(table, alias, depTable string) string {
 // status guard is redundant — BlockedStateInvariant's first clause keeps such a
 // row at 0 — but the stored flag is derived state that a merge can leave stale,
 // and a closed parent carrying an orphaned 1 must not hand it down: nothing
-// would unmark the children until somebody repaired the parent. With the
-// guard, the open rows below a closed node settle from its status, whether or
-// not its own flag was ever cleared.
+// would unmark the children until somebody repaired the parent. The guard is
+// also what lets the affected-set walk (walkParentChildDescendantsInTx) leave
+// closed and pinned descendants out of the recompute set: the open rows below
+// one settle from its status, whether or not its own flag was ever cleared.
 //
 //nolint:gosec // G201: depTable is constant; waitsForGateBlockedSQL is a constant template.
 func shouldBeBlockedIDsUnionSQL(depTable string) string {

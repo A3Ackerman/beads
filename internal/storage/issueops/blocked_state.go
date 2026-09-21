@@ -544,32 +544,84 @@ func AffectedByDeletionInTx(
 		}
 	}
 
-	for _, w := range []struct {
-		depTable, parentCol string
-		parentIDs           []string
-		seed                *[]string
-		seen                map[string]bool
-	}{
-		{"dependencies", "depends_on_issue_id", deletedIssues, &issueSeed, issueSeen},
-		{"wisp_dependencies", "depends_on_issue_id", deletedIssues, &wispSeed, wispSeen},
-		{"dependencies", "depends_on_wisp_id", deletedWisps, &issueSeed, issueSeen},
-		{"wisp_dependencies", "depends_on_wisp_id", deletedWisps, &wispSeed, wispSeen},
-	} {
-		if err := appendChildrenInTx(ctx, tx, w.depTable, w.parentCol, w.parentIDs, w.seen, w.seed); err != nil {
-			return nil, nil, err
-		}
-	}
-
-	return expandByParentChildDescendantsInTx(ctx, tx, issueSeed, wispSeed, issueSeen, wispSeen)
+	// The deleted rows are walked THROUGH, not returned: their parent-child
+	// children lose whatever they inherited and must be revisited, while the
+	// deleted ids themselves have no row left to settle. That is the same
+	// standing a closed child has in the walk, so they share its mechanism.
+	return walkParentChildDescendantsInTx(ctx, tx, issueSeed, wispSeed, deletedIssues, deletedWisps, issueSeen, wispSeen)
 }
 
+// expandByParentChildDescendantsInTx closes the seed sets over parent-child
+// descendants, in both planes, and returns the rows a recompute must visit:
+// every seed, plus every LIVE descendant of a seed. See
+// walkParentChildDescendantsInTx for what "live" leaves out and why.
 func expandByParentChildDescendantsInTx(
 	ctx context.Context, tx DBTX,
 	issueSeed, wispSeed []string,
 	issueSeen, wispSeen map[string]bool,
 ) ([]string, []string, error) {
-	issueQueue := issueSeed
-	wispQueue := wispSeed
+	return walkParentChildDescendantsInTx(ctx, tx, issueSeed, wispSeed, nil, nil, issueSeen, wispSeen)
+}
+
+// walkParentChildDescendantsInTx is the descendant walk behind every affected
+// set. It follows EVERY parent-child edge below the seeds and the through-ids,
+// breadth-first across both planes, and returns the seeds plus the descendants
+// that are neither closed nor pinned.
+//
+// A closed or pinned descendant is WALKED THROUGH BUT NOT RETURNED:
+//
+//   - Not returned, because on settled data a recompute has nothing to do
+//     with it. A closed or pinned row is never blocked (BlockedStateInvariant);
+//     the mark statement refuses it and it already sits at 0. Closing
+//     the root of a finished epic used to hand every closed row under it to a
+//     mark and an unmark statement per 200 ids to change none of them
+//     (gastownhall/beads#5427, #5939).
+//   - Walked through, because the rows BELOW it are not settled by that
+//     argument. The stored column can be stale — the invariant's merge clause
+//     admits it — and an open row under a node that was closed without a
+//     recompute may still carry the flag it inherited from further up. When
+//     the blockage further up moves, this walk is what visits that row on the
+//     write path; a walk that stopped at the closed node would leave
+//     an open, unblocked row hidden from ready work until a full repair. Once
+//     visited it settles correctly whatever the closed node's own flag says,
+//     because the should-be-blocked union's parent-child legs refuse a closed
+//     or pinned parent (shouldBeBlockedIDsUnionScopedSQL).
+//
+// WHAT IS RELINQUISHED, and it is one thing: the incidental zeroing of a closed
+// or pinned DESCENDANT's own stale is_blocked = 1. The unfiltered walk cleared
+// it in passing; this one leaves it for the full repair, and the doctor count
+// reports it. Meanwhile it cannot propagate (the union guard above) and it does
+// not reach ready work, which filters on status; a reader of the bare column
+// (IsBlockedInTx, IsBlockedBatchInTx) still reports the closed row as blocked.
+//
+// SEEDS ARE NEVER FILTERED BY STATUS. Reopen computes this set
+// while the reopened row is still closed, and the row whose status moved must
+// itself be settled (a blocked row that closes must drop to 0 in the same
+// transaction). The status test applies to DISCOVERED rows only.
+//
+// throughIssues/throughWisps join the walk on the same footing as a closed
+// child: expanded, never returned. AffectedByDeletionInTx passes the deleted
+// ids. They must already be in the seen maps, and DISJOINT from the seeds: an id
+// handed in as both is not returned, the through-list wins. No caller does
+// that — deletion marks its ids seen before it loads a seed.
+func walkParentChildDescendantsInTx(
+	ctx context.Context, tx DBTX,
+	issueSeed, wispSeed []string,
+	throughIssues, throughWisps []string,
+	issueSeen, wispSeen map[string]bool,
+) ([]string, []string, error) {
+	// The queues are the traversal frontier; the skip sets name the frontier
+	// rows that are not part of the result.
+	issueSkip := make(map[string]bool, len(throughIssues))
+	wispSkip := make(map[string]bool, len(throughWisps))
+	for _, id := range throughIssues {
+		issueSkip[id] = true
+	}
+	for _, id := range throughWisps {
+		wispSkip[id] = true
+	}
+	issueQueue := append(append(make([]string, 0, len(issueSeed)+len(throughIssues)), issueSeed...), throughIssues...)
+	wispQueue := append(append(make([]string, 0, len(wispSeed)+len(throughWisps)), wispSeed...), throughWisps...)
 	issueHead, wispHead := 0, 0
 
 	for issueHead < len(issueQueue) || wispHead < len(wispQueue) {
@@ -581,10 +633,10 @@ func expandByParentChildDescendantsInTx(
 			batch := issueQueue[issueHead:end]
 			issueHead = end
 
-			if err := appendChildrenInTx(ctx, tx, "dependencies", "depends_on_issue_id", batch, issueSeen, &issueQueue); err != nil {
+			if err := appendChildrenInTx(ctx, tx, "dependencies", "depends_on_issue_id", batch, issueSeen, issueSkip, &issueQueue); err != nil {
 				return nil, nil, err
 			}
-			if err := appendChildrenInTx(ctx, tx, "wisp_dependencies", "depends_on_issue_id", batch, wispSeen, &wispQueue); err != nil {
+			if err := appendChildrenInTx(ctx, tx, "wisp_dependencies", "depends_on_issue_id", batch, wispSeen, wispSkip, &wispQueue); err != nil {
 				return nil, nil, err
 			}
 		}
@@ -596,52 +648,96 @@ func expandByParentChildDescendantsInTx(
 			batch := wispQueue[wispHead:end]
 			wispHead = end
 
-			if err := appendChildrenInTx(ctx, tx, "dependencies", "depends_on_wisp_id", batch, issueSeen, &issueQueue); err != nil {
+			if err := appendChildrenInTx(ctx, tx, "dependencies", "depends_on_wisp_id", batch, issueSeen, issueSkip, &issueQueue); err != nil {
 				return nil, nil, err
 			}
-			if err := appendChildrenInTx(ctx, tx, "wisp_dependencies", "depends_on_wisp_id", batch, wispSeen, &wispQueue); err != nil {
+			if err := appendChildrenInTx(ctx, tx, "wisp_dependencies", "depends_on_wisp_id", batch, wispSeen, wispSkip, &wispQueue); err != nil {
 				return nil, nil, err
 			}
 		}
 	}
-	return issueQueue, wispQueue, nil
+	return withoutSkipped(issueQueue, issueSkip), withoutSkipped(wispQueue, wispSkip), nil
 }
 
-//nolint:gosec // G201: depTable and parentCol come from constant call sites.
+// withoutSkipped returns the frontier minus the walked-through rows, in
+// discovery order.
+func withoutSkipped(queue []string, skip map[string]bool) []string {
+	if len(skip) == 0 {
+		return queue
+	}
+	kept := queue[:0:0]
+	for _, id := range queue {
+		if !skip[id] {
+			kept = append(kept, id)
+		}
+	}
+	return kept
+}
+
+// appendChildrenInTx appends to the frontier every parent-child child of
+// parentIDs that seen does not already hold, and records in skip the ones that
+// are closed or pinned (walked through, not returned — see
+// walkParentChildDescendantsInTx).
+//
+// One IN query per call, not one query per parent: the walk is breadth-first
+// and hands in at most queryBatchSize parents, so a level of N parents costs
+// ceil(N/200) statements per dependency table.
+//
+// The child's status comes from a LEFT JOIN on purpose. A dependency row whose
+// child row is missing (issue_id is a cascading foreign key, but a merge can
+// land a violation, and the wisp tables are outside version control) still
+// names a node with edges below it, and the unfiltered walk followed those. An
+// inner join would silently stop there, which is the loss of recovery the
+// closed-node rule exists to avoid; with the outer join such a child has a NULL
+// status, counts as live, and costs a recompute that matches no row.
+//
+//nolint:gosec // G201: depTable and parentCol come from constant call sites; only IN-clause placeholders are formatted in.
 func appendChildrenInTx(
 	ctx context.Context, tx DBTX,
 	depTable, parentCol string,
 	parentIDs []string,
-	seen map[string]bool, queue *[]string,
+	seen, skip map[string]bool, queue *[]string,
 ) error {
 	if len(parentIDs) == 0 {
 		return nil
 	}
+	// A dependency table's issue_id always names a row in its own plane.
+	childTable := "issues"
+	if depTable == "wisp_dependencies" {
+		childTable = "wisps"
+	}
+	placeholders, args := buildSQLInClause(parentIDs)
 	query := fmt.Sprintf(`
-		SELECT issue_id FROM %s
-		WHERE type = 'parent-child'
-		  AND %s = ?
-	`, depTable, parentCol)
-	for _, parentID := range parentIDs {
-		rows, err := tx.QueryContext(ctx, query, parentID)
-		if err != nil {
-			return fmt.Errorf("expand children from %s on %s: %w", depTable, parentCol, err)
+		SELECT d.issue_id, c.status FROM %s d
+		LEFT JOIN %s c ON c.id = d.issue_id
+		WHERE d.type = 'parent-child'
+		  AND d.%s IN (%s)
+	`, depTable, childTable, parentCol, placeholders)
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("expand children from %s on %s: %w", depTable, parentCol, err)
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var childID string
+		var status sql.NullString
+		if err := rows.Scan(&childID, &status); err != nil {
+			return fmt.Errorf("expand children: scan: %w", err)
 		}
-		for rows.Next() {
-			var childID string
-			if err := rows.Scan(&childID); err != nil {
-				_ = rows.Close()
-				return fmt.Errorf("expand children: scan: %w", err)
-			}
-			if !seen[childID] {
-				seen[childID] = true
-				*queue = append(*queue, childID)
-			}
+		// A child with two parents in the batch comes back twice.
+		if seen[childID] {
+			continue
 		}
-		_ = rows.Close()
-		if err := rows.Err(); err != nil {
-			return fmt.Errorf("expand children: rows: %w", err)
+		seen[childID] = true
+		*queue = append(*queue, childID)
+		// The same pair the mark/unmark templates treat as never blocked — not
+		// the done category, which they treat as live.
+		if status.Valid && (types.Status(status.String) == types.StatusClosed || types.Status(status.String) == types.StatusPinned) {
+			skip[childID] = true
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("expand children: rows: %w", err)
 	}
 	return nil
 }
