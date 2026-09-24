@@ -13,15 +13,21 @@ import (
 // inside a transaction, so the store can recompute them again on a fresh
 // snapshot once that transaction has committed.
 //
-// The in-transaction recompute reads the transaction's start snapshot, and
-// every write that records here can only UNBLOCK a dependent: a close, an
-// update to an inactive status, a dependency removal, a delete. Two such
-// writes racing on the blockers of one dependent each see the other blocker
-// still in place, each leaves the dependent blocked without writing its row,
-// and both commit with no conflicting cell — so the dependent stays hidden
-// from `bd ready` until a repair (gastownhall/beads#6716, first seen as two
-// closes of sibling blockers). A recheck over the same ids after commit sees
-// both writes and settles the flag.
+// The in-transaction recompute reads the transaction's start snapshot. The
+// writes that record here are the ones that take a blocker away from a
+// dependent: a close, an update to an inactive status, a dependency removal,
+// a delete. Two such writes racing on the blockers of one dependent each see
+// the other blocker still in place, each leaves the dependent blocked without
+// writing its row, and both commit with no conflicting cell — so the
+// dependent stays hidden from `bd ready` until a repair
+// (gastownhall/beads#6716, first seen as two closes of sibling blockers). A
+// recheck over the same ids after commit sees both writes and settles the
+// flag. The recheck is a full recompute, so it is correct whichever way the
+// flag has to move — removing the one closed child of an any-children gate
+// can block its waiter, and the recheck settles that too. Writes that add a
+// blocker (a reopen, a dependency add, a parent-child add) recompute the same
+// way and are not recorded here; a racing pair where the last committer adds
+// a blocker can leave a dependent flagged ready while blocked.
 type BlockedRecheck struct {
 	IssueIDs []string
 	WispIDs  []string
@@ -87,13 +93,15 @@ func TakeBlockedRecheck(tx DBTX) BlockedRecheck {
 	return taken
 }
 
-// noteBlockedRecheck records the dependents an unblocking write recomputed in
-// tx. source labels the write for the recheck's commit message. exclude names
-// ids the recheck must never touch: for a close or status update, the issue
-// whose row this transaction wrote (a concurrent writer conflicts on that row
-// instead of racing past it); for a delete, the rows that no longer exist. A
-// dependency removal excludes nothing — its dependent is exactly the row
-// that needs rechecking.
+// noteBlockedRecheck records the dependents a write recomputed in tx. source
+// labels the write for the recheck's commit message. exclude names ids this
+// call leaves out: for a close or status update, the issue whose row this
+// transaction wrote (a concurrent writer conflicts on that row instead of
+// racing past it); for a delete, the rows that no longer exist. A dependency
+// removal excludes nothing — its dependent is exactly the row that needs
+// rechecking. exclude filters this call's ids only: an id an earlier write in
+// the same transaction recorded stays pending, and rechecking a row that a
+// later write deleted is a no-op, so that is harmless.
 func noteBlockedRecheck(tx DBTX, source string, exclude []string, issueIDs, wispIDs []string) {
 	scope, ok := blockedRecheckTransactions.Load(tx)
 	if !ok {

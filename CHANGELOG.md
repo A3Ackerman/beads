@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Unblocking two blockers of one dependent at the same time — closing both,
   or a close racing a `bd dep remove` or a delete of the other — no longer
   leaves the dependent stuck as blocked and hidden from `bd ready` until
-  `bd recompute-blocked`: every write that can only unblock (a close, an
+  `bd recompute-blocked`: every write that takes a blocker away (a close, an
   update to an inactive status, a dependency removal, a delete) now rechecks
   the dependents it recomputed once its transaction has committed
   ([#6716](https://github.com/gastownhall/beads/issues/6716)).
