@@ -270,7 +270,7 @@ func (s *EmbeddedDoltStore) withConn(ctx context.Context, commit bool, fn func(t
 }
 
 // recheckBlockedAfterCommit recomputes the blocked state of the dependents a
-// committed status change recorded, on a fresh snapshot
+// committed unblocking write recorded, on a fresh snapshot
 // (gastownhall/beads#6716). Every withConn call opens its own session, so two
 // callers in one process can overlap exactly as two server sessions do. It
 // runs no SQL when nothing was recorded, and the write it follows is already
@@ -288,7 +288,7 @@ func (s *EmbeddedDoltStore) recheckBlockedAfterCommit(ctx context.Context, pendi
 }
 
 // commitConn is withConn's transaction: it hands back the dependents the
-// transaction's status changes recorded once it has committed.
+// transaction's unblocking writes recorded once it has committed.
 func (s *EmbeddedDoltStore) commitConn(ctx context.Context, commit bool, fn func(tx *sql.Tx) error) (pending issueops.BlockedRecheck, err error) {
 	if s.closed.Load() {
 		err = errClosed

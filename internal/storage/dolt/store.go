@@ -1240,7 +1240,7 @@ func (s *DoltStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) 
 }
 
 // commitWriteTx runs fn in one write transaction and, once it has committed,
-// hands back the dependents its status changes recorded for a post-commit
+// hands back the dependents its unblocking writes recorded for a post-commit
 // recheck. The caller runs that recheck outside any retry loop around fn: a
 // recheck failure must never replay a write that has already landed.
 func (s *DoltStore) commitWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) (issueops.BlockedRecheck, error) {
@@ -1265,7 +1265,7 @@ func (s *DoltStore) commitWriteTx(ctx context.Context, fn func(tx *sql.Tx) error
 }
 
 // recheckBlockedAfterCommit recomputes the blocked state of the dependents a
-// committed status change recorded, on a snapshot that includes every
+// committed unblocking write recorded, on a snapshot that includes every
 // concurrent commit (gastownhall/beads#6716). It runs no SQL when nothing was
 // recorded, and mints a Dolt commit only when it changed an issues row, so
 // the corrected flag reaches history the way the close's own rows did rather
@@ -1281,8 +1281,7 @@ func (s *DoltStore) recheckBlockedAfterCommit(ctx context.Context, pending issue
 		if err != nil || !result.IssueRowsChanged {
 			return err
 		}
-		commitMsg := "bd: recheck blocked after close of " + strings.Join(pending.Sources, ", ")
-		return s.doltAddAndCommitInTx(ctx, tx, []string{"issues"}, commitMsg)
+		return s.doltAddAndCommitInTx(ctx, tx, []string{"issues"}, pending.CommitMessage())
 	})
 	if err != nil {
 		return fmt.Errorf("write committed; blocked-state recheck failed: %w", err)
