@@ -271,10 +271,20 @@ func (s *EmbeddedDoltStore) withConn(ctx context.Context, commit bool, fn func(t
 
 // recheckBlockedAfterCommit recomputes the blocked state of the dependents a
 // committed unblocking write recorded, on a fresh snapshot
-// (gastownhall/beads#6716). Every withConn call opens its own session, so two
-// callers in one process can overlap exactly as two server sessions do. It
-// runs no SQL when nothing was recorded, and the write it follows is already
-// durable: a failure here is reported as one and never undoes that write.
+// (gastownhall/beads#6716).
+//
+// Embedded transactions serialize: commitConn opens a fresh OpenSQL handle
+// per transaction, and OpenSQL (open.go) waits in a backoff with no elapsed
+// time limit for the engine, so a second handle blocks until the first has
+// been cleaned up. Two transactions therefore never run against overlapping
+// snapshots in one process, and the skew of #6716 cannot occur here; no
+// embedded reproduction exists. The recheck is kept so the embedded store
+// honors the same contract as the server store — a stale row recorded by
+// one transaction is settled after its commit — and it runs only after the
+// first handle's cleanup, so it cannot deadlock on itself. It runs no SQL
+// when nothing was recorded, and the write it follows is already durable: a
+// failure here is reported as issueops.ErrBlockedRecheckFailed and never
+// undoes that write.
 func (s *EmbeddedDoltStore) recheckBlockedAfterCommit(ctx context.Context, pending issueops.BlockedRecheck) error {
 	if pending.Empty() {
 		return nil
@@ -282,7 +292,7 @@ func (s *EmbeddedDoltStore) recheckBlockedAfterCommit(ctx context.Context, pendi
 	if _, err := s.commitConn(ctx, true, func(tx *sql.Tx) error {
 		return issueops.RecomputeIsBlockedInTx(ctx, tx, pending.IssueIDs, pending.WispIDs)
 	}); err != nil {
-		return fmt.Errorf("write committed; blocked-state recheck failed: %w", err)
+		return issueops.BlockedRecheckFailed(err)
 	}
 	return nil
 }

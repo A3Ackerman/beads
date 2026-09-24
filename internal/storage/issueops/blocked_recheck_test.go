@@ -1,6 +1,7 @@
 package issueops
 
 import (
+	"errors"
 	"slices"
 	"testing"
 
@@ -89,5 +90,25 @@ func TestBlockedRecheck_Labels(t *testing.T) {
 		if tc.got != tc.want {
 			t.Errorf("%s: got %q, want %q", tc.name, tc.got, tc.want)
 		}
+	}
+}
+
+// TestBlockedRecheckFailed_KeepsSentinelAndCause: a store reports a recheck
+// failure so that a caller can tell a committed write (errors.Is the
+// sentinel) from an uncommitted one, without losing the underlying cause.
+func TestBlockedRecheckFailed_KeepsSentinelAndCause(t *testing.T) {
+	cause := errors.New("dolt: connection reset")
+	err := BlockedRecheckFailed(cause)
+	if !errors.Is(err, ErrBlockedRecheckFailed) {
+		t.Fatalf("errors.Is(err, ErrBlockedRecheckFailed) = false for %v", err)
+	}
+	if !errors.Is(err, cause) {
+		t.Fatalf("errors.Is(err, cause) = false for %v", err)
+	}
+	if want := "blocked-state recheck after a committed write failed: dolt: connection reset"; err.Error() != want {
+		t.Fatalf("err = %q, want %q", err.Error(), want)
+	}
+	if errors.Is(cause, ErrBlockedRecheckFailed) {
+		t.Fatal("a bare cause must not read as a recheck failure")
 	}
 }

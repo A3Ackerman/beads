@@ -1270,8 +1270,8 @@ func (s *DoltStore) commitWriteTx(ctx context.Context, fn func(tx *sql.Tx) error
 // recorded, and mints a Dolt commit only when it changed an issues row, so
 // the corrected flag reaches history the way the close's own rows did rather
 // than sitting dirty in the working set. The write it follows is already
-// durable, so a failure here is reported as one and never undoes or replays
-// that write.
+// durable, so a failure here is reported as issueops.ErrBlockedRecheckFailed
+// and never undoes or replays that write.
 func (s *DoltStore) recheckBlockedAfterCommit(ctx context.Context, pending issueops.BlockedRecheck) error {
 	if pending.Empty() {
 		return nil
@@ -1284,7 +1284,7 @@ func (s *DoltStore) recheckBlockedAfterCommit(ctx context.Context, pending issue
 		return s.doltAddAndCommitInTx(ctx, tx, []string{"issues"}, pending.CommitMessage())
 	})
 	if err != nil {
-		return fmt.Errorf("write committed; blocked-state recheck failed: %w", err)
+		return issueops.BlockedRecheckFailed(err)
 	}
 	return nil
 }

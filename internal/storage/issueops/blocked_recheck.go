@@ -1,6 +1,7 @@
 package issueops
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -40,7 +41,27 @@ func (r BlockedRecheck) CommitMessage() string {
 	return "bd: recheck blocked after " + strings.Join(r.Sources, ", ")
 }
 
+// blockedRecheckTransactions holds the open scopes, one per transaction. It is
+// keyed by the DBTX interface value: a write records into a scope only when
+// the very same *sql.Tx the store scoped reaches noteBlockedRecheck. A future
+// DBTX wrapper around that tx would compare unequal and silently record
+// nothing — the same shape, and the same caveat, as the events-journal scope
+// in journal.go.
 var blockedRecheckTransactions sync.Map // map[DBTX]*BlockedRecheck; entries live for one transaction
+
+// ErrBlockedRecheckFailed marks a failure of the post-commit recheck of
+// dependents' blocked state. The write that preceded it is committed and
+// durable; only the recheck failed, so at worst a dependent carries the stale
+// is_blocked flag that `bd doctor` and `bd recompute-blocked` already repair.
+// Callers use errors.Is with it to tell a committed write from one that never
+// landed, since both reach them as an error from the same store call.
+var ErrBlockedRecheckFailed = errors.New("blocked-state recheck after a committed write failed")
+
+// BlockedRecheckFailed wraps a recheck failure so both ErrBlockedRecheckFailed
+// and the underlying cause stay reachable through errors.Is and errors.As.
+func BlockedRecheckFailed(err error) error {
+	return fmt.Errorf("%w: %w", ErrBlockedRecheckFailed, err)
+}
 
 // ScopeBlockedRecheckTransaction lets the unblocking writes in tx record the
 // dependents they recomputed, for TakeBlockedRecheck once tx has committed.
