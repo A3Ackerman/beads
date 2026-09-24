@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Closing two sibling blockers at the same time no longer leaves their shared
+  dependent stuck as blocked and hidden from `bd ready` until
+  `bd recompute-blocked`: a close now rechecks the dependents it recomputed
+  once its transaction has committed
+  ([#6716](https://github.com/gastownhall/beads/issues/6716)).
 - **`bd list --watch --format` is refused instead of silently dropping the
   format** ([#6277](https://github.com/gastownhall/beads/issues/6277)).
   `--watch` always re-renders the pretty listing, so on the direct route a
