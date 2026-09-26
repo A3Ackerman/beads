@@ -890,19 +890,20 @@ var doltTracer = otel.Tracer("github.com/steveyegge/beads/storage/dolt")
 // Instruments are registered against the global delegating provider at init time,
 // so they automatically forward to the real provider once telemetry.Init() runs.
 var doltMetrics struct {
-	retryCount           metric.Int64Counter
-	lockWaitMs           metric.Float64Histogram
-	circuitTrips         metric.Int64Counter
-	circuitRejected      metric.Int64Counter
-	serializationErrors  metric.Int64Counter
-	writeRetries         metric.Int64Counter
-	postTxCommitDropped  metric.Int64Counter
-	connAcquireMs        metric.Float64Histogram
-	poolWaitCount        metric.Int64Counter
-	poolWaitMs           metric.Float64Histogram
-	claimVerifyLost      metric.Int64Counter
-	claimVerifyRecovered metric.Int64Counter
-	ignoredTxFreshPool   metric.Int64Counter
+	retryCount            metric.Int64Counter
+	lockWaitMs            metric.Float64Histogram
+	circuitTrips          metric.Int64Counter
+	circuitRejected       metric.Int64Counter
+	serializationErrors   metric.Int64Counter
+	writeRetries          metric.Int64Counter
+	postTxCommitDropped   metric.Int64Counter
+	blockedRecheckDropped metric.Int64Counter
+	connAcquireMs         metric.Float64Histogram
+	poolWaitCount         metric.Int64Counter
+	poolWaitMs            metric.Float64Histogram
+	claimVerifyLost       metric.Int64Counter
+	claimVerifyRecovered  metric.Int64Counter
+	ignoredTxFreshPool    metric.Int64Counter
 }
 
 func init() {
@@ -934,6 +935,10 @@ func init() {
 	doltMetrics.postTxCommitDropped, _ = m.Int64Counter("bd.db.post_tx_commit_dropped",
 		metric.WithDescription("Post-tx dolt commits abandoned after retries; the data landed but no dolt commit was minted (change rides the next commit on the branch)"),
 		metric.WithUnit("{commit}"),
+	)
+	doltMetrics.blockedRecheckDropped, _ = m.Int64Counter("bd.db.blocked_recheck_dropped",
+		metric.WithDescription("Post-commit blocked-state rechecks abandoned; the write landed but dependents may carry a stale is_blocked flag until `bd recompute-blocked`"),
+		metric.WithUnit("{recheck}"),
 	)
 	doltMetrics.connAcquireMs, _ = m.Float64Histogram("bd.db.conn_acquire_ms",
 		metric.WithDescription("Time to acquire a pooled connection for a Dolt transaction"),
@@ -1228,7 +1233,8 @@ func (s *DoltStore) withRetryTx(ctx context.Context, fn func(tx *sql.Tx) error) 
 	}, backoff.WithContext(bo, ctx)); err != nil {
 		return err
 	}
-	return s.recheckBlockedAfterCommit(ctx, pending)
+	logBlockedRecheckFailure(ctx, pending, s.recheckBlockedAfterCommit(ctx, pending))
+	return nil
 }
 
 func (s *DoltStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) error {
@@ -1236,7 +1242,8 @@ func (s *DoltStore) withWriteTx(ctx context.Context, fn func(tx *sql.Tx) error) 
 	if err != nil {
 		return err
 	}
-	return s.recheckBlockedAfterCommit(ctx, pending)
+	logBlockedRecheckFailure(ctx, pending, s.recheckBlockedAfterCommit(ctx, pending))
+	return nil
 }
 
 // commitWriteTx runs fn in one write transaction and, once it has committed,
@@ -1269,13 +1276,18 @@ func (s *DoltStore) commitWriteTx(ctx context.Context, fn func(tx *sql.Tx) error
 // concurrent commit (gastownhall/beads#6716). It runs no SQL when nothing was
 // recorded, and mints a Dolt commit only when it changed an issues row, so
 // the corrected flag reaches history the way the close's own rows did rather
-// than sitting dirty in the working set. The write it follows is already
-// durable, so a failure here is reported as issueops.ErrBlockedRecheckFailed
-// and never undoes or replays that write.
+// than sitting dirty in the working set.
+//
+// It runs on issueops.BlockedRecheckContext: the write it follows is durable,
+// so the repair must outlive that write's cancellation, and a recheck must
+// never start another recheck. The returned failure is for the caller to log,
+// never to return — see logBlockedRecheckFailure.
 func (s *DoltStore) recheckBlockedAfterCommit(ctx context.Context, pending issueops.BlockedRecheck) error {
-	if pending.Empty() {
+	if pending.Empty() || issueops.InBlockedRecheck(ctx) {
 		return nil
 	}
+	ctx, cancel := issueops.BlockedRecheckContext(ctx)
+	defer cancel()
 	err := s.withRetryTx(ctx, func(tx *sql.Tx) error {
 		result, err := issueops.RecomputeIsBlockedInTxWithResult(ctx, tx, pending.IssueIDs, pending.WispIDs)
 		if err != nil || !result.IssueRowsChanged {
@@ -1287,6 +1299,26 @@ func (s *DoltStore) recheckBlockedAfterCommit(ctx context.Context, pending issue
 		return issueops.BlockedRecheckFailed(err)
 	}
 	return nil
+}
+
+// logBlockedRecheckFailure reports a post-commit recheck failure instead of
+// returning it. The write it followed is committed and durable, and every
+// caller of a store write reads an error as "the mutation did not land":
+// surfacing this one would make automated callers retry and double-apply,
+// the inversion issue_operations_tx.go documents. What is left behind is the
+// stale is_blocked flag `bd doctor` and `bd recompute-blocked` repair, which
+// is the state every write had before the recheck existed.
+//
+// Because the failure stops here, this counter and line are its only trace —
+// the same pair post_tx_commit_dropped uses for the same situation, a post-tx
+// step that failed while its write stayed durable (issue_operations_tx.go). The
+// counter is what a fleet alerts on; the line names the rows to repair.
+func logBlockedRecheckFailure(ctx context.Context, pending issueops.BlockedRecheck, err error) {
+	if err == nil {
+		return
+	}
+	doltMetrics.blockedRecheckDropped.Add(ctx, 1)
+	log.Printf("warning: %s", issueops.BlockedRecheckFailureMessage(pending, err))
 }
 
 // SetEventsJournalEnabled activates the journal for this store instance only.

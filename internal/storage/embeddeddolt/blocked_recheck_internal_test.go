@@ -5,6 +5,7 @@ package embeddeddolt
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -14,9 +15,9 @@ import (
 )
 
 // TestEmbeddedBlockedRecheckRecordsUnblockingWrites pins, on a real engine,
-// that every write which can only unblock a dependent records that dependent
-// for the post-commit recheck through the embedded store's own scoped
-// transaction: a close, a dependency removal, a delete. The embedded store
+// that an unblocking write running on the embedded store's own scoped
+// transaction records the dependents it recomputed for the post-commit
+// recheck: a close, a dependency removal, a delete. The embedded store
 // serializes its transactions so the skew of gastownhall/beads#6716 cannot
 // occur here; the recording contract is what this tier can verify, and the
 // server tier's close_recheck_blocked_test.go races it.
@@ -99,5 +100,65 @@ func TestEmbeddedBlockedRecheckRecordsUnblockingWrites(t *testing.T) {
 	}
 	if got.IsBlocked {
 		t.Fatal("rb-c is still blocked after its last blocker was deleted")
+	}
+}
+
+// TestEmbeddedBlockedRecheckFailureKeepsTheWrite pins what a *failing* recheck
+// does at the store seam, which is the half of the contract the wrapper's unit
+// test cannot reach: the write it follows has already committed, so the store
+// call still succeeds and the row is durable, and the failure the store's own
+// withConn/commitConn path produces carries issueops.ErrBlockedRecheckFailed
+// for the warning that reports it.
+func TestEmbeddedBlockedRecheckFailureKeepsTheWrite(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), ".beads"), "recheckfail", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SetConfig(ctx, "issue_prefix", "rb"); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"rb-a", "rb-b", "rb-c"} {
+		iss := &types.Issue{ID: id, Title: id, Status: types.StatusOpen, Priority: 2, IssueType: types.TypeTask}
+		if err := store.CreateIssue(ctx, iss, "tester"); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+	}
+	for _, blocker := range []string{"rb-a", "rb-b"} {
+		if err := store.AddDependency(ctx, &types.Dependency{IssueID: "rb-c", DependsOnID: blocker, Type: types.DepBlocks}, "tester"); err != nil {
+			t.Fatalf("add dependency rb-c -> %s: %v", blocker, err)
+		}
+	}
+
+	// Fail the recheck and nothing else: the write's own commitConn has
+	// already passed the read-only check when fn runs, so flipping the flag
+	// here leaves the close committed and refuses only the transaction the
+	// recheck opens afterwards.
+	if err := store.withConn(ctx, true, func(tx *sql.Tx) error {
+		if _, err := issueops.CloseIssueInTx(ctx, tx, "rb-a", "done", "tester", ""); err != nil {
+			return err
+		}
+		store.readOnly = true
+		return nil
+	}); err != nil {
+		t.Fatalf("a committed write whose recheck failed returned %v, want nil", err)
+	}
+	store.readOnly = false
+
+	closed, err := store.GetIssue(ctx, "rb-a")
+	if err != nil {
+		t.Fatalf("get rb-a: %v", err)
+	}
+	if closed.Status != types.StatusClosed {
+		t.Fatalf("rb-a is %s after a close whose recheck failed, want the write to be durable", closed.Status)
+	}
+
+	// The failure itself, on the path that produces it.
+	store.readOnly = true
+	recheckErr := store.recheckBlockedAfterCommit(ctx, issueops.BlockedRecheck{IssueIDs: []string{"rb-c"}})
+	store.readOnly = false
+	if !errors.Is(recheckErr, issueops.ErrBlockedRecheckFailed) {
+		t.Fatalf("a failed recheck returned %v, want it to carry ErrBlockedRecheckFailed", recheckErr)
 	}
 }

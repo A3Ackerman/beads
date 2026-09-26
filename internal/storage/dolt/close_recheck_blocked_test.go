@@ -3,6 +3,7 @@ package dolt
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"slices"
 	"testing"
 
@@ -211,5 +212,67 @@ func TestCloseRecheckBlocked_DeleteRecordsDependents(t *testing.T) {
 	}
 	if want := []string{"delete of rb-b"}; !slices.Equal(pending.Sources, want) {
 		t.Fatalf("delete Sources = %v, want %v", pending.Sources, want)
+	}
+}
+
+// TestCloseRecheckBlocked_FailureKeepsTheWrite pins the swallow on this tier —
+// the one #6716 was reported on, and the one every other test here reaches by
+// calling recheckBlockedAfterCommit directly, which crosses neither runner's
+// tail. Both runners log a recheck failure and return nil, so a close whose
+// recheck failed is durable and its caller is never told to retry a write that
+// landed; restoring `return s.recheckBlockedAfterCommit(...)` on either would
+// otherwise turn nothing red. It mirrors the embedded tier's
+// TestEmbeddedBlockedRecheckFailureKeepsTheWrite.
+func TestCloseRecheckBlocked_FailureKeepsTheWrite(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	ctx, cancel := testContext(t)
+	defer cancel()
+	seedSiblingBlockers(t, ctx, store)
+
+	// Fail the recheck and nothing else, the way the embedded test flips
+	// readOnly: commitWriteTx has already passed its closed check by the time fn
+	// runs, so marking the store here leaves this close committed and refuses
+	// only the transaction the recheck opens next. ErrStoreClosed is not
+	// retryable, so that refusal is immediate and never reaches the breaker.
+	closeInTx := func(id string) func(tx *sql.Tx) error {
+		return func(tx *sql.Tx) error {
+			if _, err := issueops.CloseIssueInTx(ctx, tx, id, "done", "tester", ""); err != nil {
+				return err
+			}
+			store.closed.Store(true)
+			return nil
+		}
+	}
+
+	if err := store.withRetryTx(ctx, closeInTx("rb-a")); err != nil {
+		store.closed.Store(false)
+		t.Fatalf("withRetryTx: a committed close whose recheck failed returned %v, want nil", err)
+	}
+	store.closed.Store(false)
+
+	if err := store.withWriteTx(ctx, closeInTx("rb-b")); err != nil {
+		store.closed.Store(false)
+		t.Fatalf("withWriteTx: a committed close whose recheck failed returned %v, want nil", err)
+	}
+	store.closed.Store(false)
+
+	for _, id := range []string{"rb-a", "rb-b"} {
+		got, err := store.GetIssue(ctx, id)
+		if err != nil {
+			t.Fatalf("get %s: %v", id, err)
+		}
+		if got.Status != types.StatusClosed {
+			t.Fatalf("%s is %s after a close whose recheck failed, want the write to be durable", id, got.Status)
+		}
+	}
+
+	// The failure the runners swallow is the one that names itself, so the
+	// warning they log tells a stale dependent from a write that never landed.
+	store.closed.Store(true)
+	recheckErr := store.recheckBlockedAfterCommit(ctx, issueops.BlockedRecheck{IssueIDs: []string{"rb-c"}})
+	store.closed.Store(false)
+	if !errors.Is(recheckErr, issueops.ErrBlockedRecheckFailed) {
+		t.Fatalf("a failed recheck returned %v, want it to carry ErrBlockedRecheckFailed", recheckErr)
 	}
 }

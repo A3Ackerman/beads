@@ -1,8 +1,10 @@
 package issueops
 
 import (
+	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
@@ -52,6 +54,55 @@ func TestBlockedRecheck_RecordsEveryUnblockingWrite(t *testing.T) {
 	}
 }
 
+// TestBlockedRecheck_BoundsTheCommitMessage: one transaction can close or
+// delete an unbounded number of issues, so the recheck's commit message names
+// at most recheckSourceLimit writes and counts the rest — it keeps naming the
+// ones it retained, because this commit is the only record of which write
+// triggered the repair. A write that contributed no id to recheck is not named
+// at all, since the recheck never touches anything on its behalf.
+func TestBlockedRecheck_BoundsTheCommitMessage(t *testing.T) {
+	tx := scopedRecheckTx(t)
+
+	// A write whose only recomputed id is its own excluded row adds nothing.
+	noteBlockedRecheck(tx, "close of rb-lonely", []string{"rb-lonely"}, []string{"rb-lonely"}, nil)
+	if pending := TakeBlockedRecheck(tx); !pending.Empty() || len(pending.Sources) != 0 || pending.SourceCount != 0 {
+		t.Fatalf("a write that recorded no id left %+v, want an untouched scope", pending)
+	}
+
+	for _, id := range []string{"rb-1", "rb-2", "rb-3", "rb-4"} {
+		noteBlockedRecheck(tx, "close of blocker-"+id, nil, []string{id}, nil)
+	}
+	pending := TakeBlockedRecheck(tx)
+	if pending.SourceCount != 4 || len(pending.Sources) != recheckSourceLimit {
+		t.Fatalf("SourceCount = %d, Sources = %v, want 4 recorded writes and %d names", pending.SourceCount, pending.Sources, recheckSourceLimit)
+	}
+	want := "bd: recheck blocked after close of blocker-rb-1, close of blocker-rb-2, close of blocker-rb-3 and 1 more"
+	if pending.CommitMessage() != want {
+		t.Fatalf("CommitMessage() = %q, want %q", pending.CommitMessage(), want)
+	}
+}
+
+// TestBlockedRecheck_CountsOnlyTheWritesItDidNotName: Sources is deduplicated
+// and SourceCount is not, so two writes rendering one label (two equal-sized
+// bulk deletes) leave the count ahead of the names. The message counts the
+// writes it did not name rather than all of them, so that skew cannot make it
+// claim more unnamed writes than exist — or drop the one name it has.
+func TestBlockedRecheck_CountsOnlyTheWritesItDidNotName(t *testing.T) {
+	tx := scopedRecheckTx(t)
+
+	label := deleteRecheckLabel([]string{"rb-1", "rb-2", "rb-3", "rb-4"}, "")
+	noteBlockedRecheck(tx, label, nil, []string{"rb-c"}, nil)
+	noteBlockedRecheck(tx, label, nil, []string{"rb-d"}, nil)
+
+	pending := TakeBlockedRecheck(tx)
+	if pending.SourceCount != 2 || len(pending.Sources) != 1 {
+		t.Fatalf("SourceCount = %d, Sources = %v, want 2 recorded writes deduplicated to 1 name", pending.SourceCount, pending.Sources)
+	}
+	if want := "bd: recheck blocked after delete of 4 issues and 1 more"; pending.CommitMessage() != want {
+		t.Fatalf("CommitMessage() = %q, want %q", pending.CommitMessage(), want)
+	}
+}
+
 // TestBlockedRecheck_UnscopedTransactionRecordsNothing: a transaction the
 // store never scoped (or whose scope already ended) records and returns
 // nothing, so the stores' Tx surfaces keep their pre-recheck behaviour.
@@ -93,9 +144,35 @@ func TestBlockedRecheck_Labels(t *testing.T) {
 	}
 }
 
-// TestBlockedRecheckFailed_KeepsSentinelAndCause: a store reports a recheck
-// failure so that a caller can tell a committed write (errors.Is the
-// sentinel) from an uncommitted one, without losing the underlying cause.
+// TestBlockedRecheckContext_SurvivesItsCallerAndGuardsRecursion pins the two
+// properties the stores' post-commit recheck depends on: it keeps running
+// after the write's own context is cancelled (the write is already durable,
+// so a cancelled caller must not skip the repair), and it marks itself so a
+// recheck cannot start another recheck.
+func TestBlockedRecheckContext_SurvivesItsCallerAndGuardsRecursion(t *testing.T) {
+	caller, cancelCaller := context.WithCancel(t.Context())
+	if InBlockedRecheck(caller) {
+		t.Fatal("an ordinary write context reads as a recheck")
+	}
+
+	ctx, cancel := BlockedRecheckContext(caller)
+	defer cancel()
+	cancelCaller()
+
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("recheck context died with its caller: %v", err)
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("recheck context has no deadline of its own")
+	}
+	if !InBlockedRecheck(ctx) {
+		t.Fatal("a recheck context does not report itself, so a recheck could start another")
+	}
+}
+
+// TestBlockedRecheckFailed_KeepsSentinelAndCause: a store wraps a recheck
+// failure so its log line tells a committed write whose recheck failed from a
+// write that never landed, without losing the underlying cause.
 func TestBlockedRecheckFailed_KeepsSentinelAndCause(t *testing.T) {
 	cause := errors.New("dolt: connection reset")
 	err := BlockedRecheckFailed(cause)
@@ -110,5 +187,27 @@ func TestBlockedRecheckFailed_KeepsSentinelAndCause(t *testing.T) {
 	}
 	if errors.Is(cause, ErrBlockedRecheckFailed) {
 		t.Fatal("a bare cause must not read as a recheck failure")
+	}
+}
+
+// TestBlockedRecheckFailureMessage_NamesTheStaleRowsAndTheRepair: the failure
+// never reaches the write's caller, so this line plus the Dolt store's counter
+// are its only trace. An operator reading it has to learn which rows went stale
+// and what repairs them, and a bulk write must not turn one warning into an
+// unbounded line.
+func TestBlockedRecheckFailureMessage_NamesTheStaleRowsAndTheRepair(t *testing.T) {
+	cause := BlockedRecheckFailed(errors.New("dolt: connection reset"))
+
+	got := BlockedRecheckFailureMessage(BlockedRecheck{IssueIDs: []string{"rb-c"}, WispIDs: []string{"rb-w"}}, cause)
+	want := "blocked-state recheck after a committed write failed: dolt: connection reset; " +
+		"left unrechecked and possibly stale: rb-c, rb-w — repair with `bd recompute-blocked`"
+	if got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+
+	bulk := BlockedRecheck{IssueIDs: []string{"rb-1", "rb-2", "rb-3", "rb-4", "rb-5"}}
+	got = BlockedRecheckFailureMessage(bulk, cause)
+	if want := "left unrechecked and possibly stale: rb-1, rb-2, rb-3 and 2 more — repair with `bd recompute-blocked`"; !strings.HasSuffix(got, want) {
+		t.Fatalf("message for %d ids = %q, want it to end with %q", len(bulk.IssueIDs), got, want)
 	}
 }

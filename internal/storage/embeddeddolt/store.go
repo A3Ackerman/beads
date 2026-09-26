@@ -266,7 +266,26 @@ func (s *EmbeddedDoltStore) withConn(ctx context.Context, commit bool, fn func(t
 	if err != nil {
 		return err
 	}
-	return s.recheckBlockedAfterCommit(ctx, pending)
+	logBlockedRecheckFailure(pending, s.recheckBlockedAfterCommit(ctx, pending))
+	return nil
+}
+
+// logBlockedRecheckFailure reports a post-commit recheck failure instead of
+// returning it. The write it followed is committed and durable, and every
+// caller of a store write reads an error as "the mutation did not land":
+// surfacing this one would make automated callers retry and double-apply.
+// What is left behind is the stale is_blocked flag `bd doctor` and
+// `bd recompute-blocked` repair, which is the state every write had before
+// the recheck existed.
+//
+// The sentence is issueops.BlockedRecheckFailureMessage, shared with the Dolt
+// store; only the sink differs. This store has no metrics registry, so unlike
+// the Dolt store's counter this line is the whole signal.
+func logBlockedRecheckFailure(pending issueops.BlockedRecheck, err error) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %s\n", issueops.BlockedRecheckFailureMessage(pending, err))
 }
 
 // recheckBlockedAfterCommit recomputes the blocked state of the dependents a
@@ -282,13 +301,18 @@ func (s *EmbeddedDoltStore) withConn(ctx context.Context, commit bool, fn func(t
 // honors the same contract as the server store — a stale row recorded by
 // one transaction is settled after its commit — and it runs only after the
 // first handle's cleanup, so it cannot deadlock on itself. It runs no SQL
-// when nothing was recorded, and the write it follows is already durable: a
-// failure here is reported as issueops.ErrBlockedRecheckFailed and never
-// undoes that write.
+// when nothing was recorded.
+//
+// It runs on issueops.BlockedRecheckContext: the write it follows is durable,
+// so the repair must outlive that write's cancellation, and a recheck must
+// never start another recheck. The returned failure is for the caller to log,
+// never to return — see logBlockedRecheckFailure.
 func (s *EmbeddedDoltStore) recheckBlockedAfterCommit(ctx context.Context, pending issueops.BlockedRecheck) error {
-	if pending.Empty() {
+	if pending.Empty() || issueops.InBlockedRecheck(ctx) {
 		return nil
 	}
+	ctx, cancel := issueops.BlockedRecheckContext(ctx)
+	defer cancel()
 	if _, err := s.commitConn(ctx, true, func(tx *sql.Tx) error {
 		return issueops.RecomputeIsBlockedInTx(ctx, tx, pending.IssueIDs, pending.WispIDs)
 	}); err != nil {
