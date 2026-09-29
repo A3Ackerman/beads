@@ -112,6 +112,7 @@ go_test(
         "//internal/storage/issueops",
         "//internal/storage/journalscan",
         "//internal/storage/schema",
+        "//internal/storage/sqlbuild",
         "//internal/testutil",
         "//internal/types",
         "@com_github_data_dog_go_sqlmock//:go-sqlmock",

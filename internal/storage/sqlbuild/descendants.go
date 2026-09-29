@@ -35,7 +35,9 @@ func descendantWalkTables(includeWisps bool) []string {
 // exist. JOIN_ORDER(d,e) LOOKUP_JOIN(d,e) pins the frontier as the outer side
 // with an index probe into the edge table on every member regardless of
 // statistics; on MySQL the unknown LOOKUP_JOIN hint is ignored with a
-// warning, and other dialects read the comment as a comment.
+// warning — one per hint comment, so 6 per includeWisps=true query, which a
+// runner that logs SHOW WARNINGS will see on every call — and other dialects
+// read the comment as a comment.
 //
 // Bind with DescendantWalkArgs; placeholder order follows the member order
 // built here.

@@ -81,6 +81,83 @@ func TestDescendantWalkArgsMatchPlaceholders(t *testing.T) {
 	}
 }
 
+// TestDescendantWalkQueryReproducesDepTargetPrecedence pins the per-column
+// IS NULL guards, the one place the reshaped walk's semantics differ textually
+// from the COALESCE it replaces, and binds the walk's column set to
+// DepTargetExpr.
+//
+// Neither of the other new tests sees these guards: the shape test above
+// asserts on parent_edges / JOIN ( / COALESCE and on member counts, never on a
+// guard, and the real-Dolt reference test seeds every edge through exactly one
+// target column, so no fixture row has two targets set for the precedence to
+// resolve. Deleting nullGuards' arguments therefore leaves both green.
+//
+// The expected counts are derived, not restated: a member keyed on the column
+// at index j must exclude every column ahead of it in DepTargetExpr's
+// precedence order, so column j carries len(cols)-1-j guards per dependency
+// table — 2 for the first column, 1 for the second, 0 for the last. That
+// derivation is also what binds the two lists: if DepTargetExpr gains a target
+// column and descendantWalkTargetCols does not, both the guard counts and the
+// member count below disagree with the query.
+func TestDescendantWalkQueryReproducesDepTargetPrecedence(t *testing.T) {
+	t.Parallel()
+
+	cols := depTargetColumns(t)
+
+	for _, includeWisps := range []bool{false, true} {
+		q := sqlbuild.DescendantWalkQuery(includeWisps)
+		tables := recursiveMembers(includeWisps) / len(cols)
+		if tables*len(cols) != recursiveMembers(includeWisps) {
+			t.Fatalf("includeWisps=%v: %d members is not one per (table, column) over %d columns %v",
+				includeWisps, recursiveMembers(includeWisps), len(cols), cols)
+		}
+
+		// One anchor member per (table, column): the anchor is the only place
+		// the target column is compared to the bound root id unqualified.
+		for _, col := range cols {
+			if got := strings.Count(q, "WHERE type = 'parent-child' AND "+col+" = ?"); got != tables {
+				t.Errorf("includeWisps=%v: %q anchored on %d of %d dependency tables:\n%s",
+					includeWisps, col, got, tables, q)
+			}
+		}
+
+		// nullGuards emits " AND <prefix><col> IS NULL"; the leading " AND " is
+		// what keeps the unqualified count from also matching the "e."-prefixed
+		// recursive form.
+		for j, col := range cols {
+			wantPerTable := len(cols) - 1 - j
+			for _, prefix := range []string{"", "e."} {
+				guard := " AND " + prefix + col + " IS NULL"
+				if got, want := strings.Count(q, guard), wantPerTable*tables; got != want {
+					t.Errorf("includeWisps=%v: %q appears %d times, want %d — the members after %s no longer exclude it, so the walk does not reproduce DepTargetExpr's precedence:\n%s",
+						includeWisps, guard, got, want, col, q)
+				}
+			}
+		}
+	}
+}
+
+// depTargetColumns is the column list inside DepTargetExpr, in its precedence
+// order. descendantWalkTargetCols is unexported, so the exported expression it
+// claims to mirror is what the tests can bind it to.
+func depTargetColumns(t *testing.T) []string {
+	t.Helper()
+
+	inner, ok := strings.CutPrefix(sqlbuild.DepTargetExpr, "COALESCE(")
+	if !ok {
+		t.Fatalf("DepTargetExpr is no longer a COALESCE expression: %q", sqlbuild.DepTargetExpr)
+	}
+	inner, ok = strings.CutSuffix(inner, ")")
+	if !ok {
+		t.Fatalf("DepTargetExpr is not parenthesised: %q", sqlbuild.DepTargetExpr)
+	}
+	cols := strings.Split(inner, ", ")
+	if len(cols) < 2 {
+		t.Fatalf("DepTargetExpr resolves %d column(s), expected the typed target set: %q", len(cols), sqlbuild.DepTargetExpr)
+	}
+	return cols
+}
+
 // recursiveMembers is one member per (dependency table, target column) pair.
 func recursiveMembers(includeWisps bool) int {
 	if includeWisps {
