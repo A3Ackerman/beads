@@ -12,13 +12,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`BEADS_DOLT_POOL_READ_TIMEOUT` / `dolt.pool-read-timeout` (and the write
   twins) now apply to every `bd` command in server mode.** The knobs shipped in
   #5089, but their env/config ladder ran only for callers of `NewFromConfig*`;
-  the CLI's own store open and `bd serve`'s provider hand-build their config
-  and go straight to `New`, so every `bd` command kept the built-in 10 s pool
+  the CLI's own store open hand-builds its config and goes straight to `New`,
+  so every `bd` command kept the built-in 10 s pool
   deadline whatever the knob said — on a large shared server that is what made
   `bd close` of a bead with dependents die in its recompute with `i/o timeout`
   and no relief valve. The ladder now runs from the constructor every DoltStore
-  open shares — the CLI's store, `bd serve`'s store provider and library
-  callers of `New`/`NewFromConfig*`; `bd serve`'s HTTP data path builds its own
+  open shares — the CLI's store and library callers of
+  `New`/`NewFromConfig*`; `bd serve`'s HTTP data path builds its own
   DSN without pool deadlines and is unchanged
   ([#6144](https://github.com/gastownhall/beads/issues/6144)). Note for
   operators of loaded servers: the documented precedence now reaches `bd
