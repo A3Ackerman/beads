@@ -279,6 +279,32 @@ func GetGitHooksDir() (string, error) {
 	return gitHooksDir(exec.Command("git", "config", "--get", "core.hooksPath"), getGitContext)
 }
 
+// GetGitHooksDirFrom resolves a fresh hook path without reading the legacy cache.
+// Like GetGitHooksDir, an absolute configured path needs no working repository.
+// Routing and supplied env are honored unchanged; tilde uses the process home.
+func GetGitHooksDirFrom(workDir string, env []string) (string, error) {
+	if workDir == "" {
+		return "", fmt.Errorf("hooks path requires a working directory")
+	}
+	workDir, err := filepath.Abs(workDir)
+	if err != nil {
+		return "", err
+	}
+	workDir, err = filepath.EvalSymlinks(workDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve hooks working directory: %w", err)
+	}
+	if canonical := canonicalizeCase(workDir); canonical != "" {
+		workDir = canonical
+	}
+	cmd := exec.Command("git", "config", "--get", "core.hooksPath")
+	cmd.Dir, cmd.Env = workDir, env
+	return gitHooksDir(cmd, func() (*gitContext, error) {
+		ctx := loadGitContext(workDir, env)
+		return &ctx, ctx.err
+	})
+}
+
 func gitHooksDir(cmd *exec.Cmd, context func() (*gitContext, error)) (string, error) {
 	// Respect core.hooksPath if configured.
 	// This is used by beads' Dolt backend (hooks installed to .beads/hooks/).
