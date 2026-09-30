@@ -217,6 +217,30 @@ func TestPRWorkflowExercisesWindowsEnvironmentHelpers(t *testing.T) {
 	}
 }
 
+func TestPRCIGateRequiresWindowsGlobalPrimeOverride(t *testing.T) {
+	workflow := readCIWorkflow(t, "pr.yml")
+	job := workflow.job(t, "test-windows-liveness")
+	step := job.step(t, "Run native Windows global Prime override")
+	if job.If != "" || job.ContinueOnError || step.If != "" ||
+		(step.ContinueOnError != nil && step.ContinueOnError != false) {
+		t.Fatal("native Windows global Prime override must be unconditional and required")
+	}
+	if step.Shell != "bash" || step.Env["CGO_ENABLED"] != "1" {
+		t.Fatal("native Windows global Prime override requires Bash and CGO")
+	}
+	if !strings.Contains(step.Run, "./scripts/test.sh") ||
+		!strings.Contains(step.Run, "^TestPrimeBinaryPortfolio$/^TestPrime_HookJSON_GlobalPrimeOverride$") {
+		t.Fatal("native Windows gate must execute the global Prime override fixture")
+	}
+	gate := workflow.job(t, "ci-gate")
+	env := gate.step(t, "Evaluate CI gate").Env
+	if !contains(gate.Needs, "test-windows-liveness") ||
+		env["TEST_WINDOWS_LIVENESS"] != "${{ needs.test-windows-liveness.result }}" ||
+		!contains(strings.Fields(env["CI_GATE_REQUIRED"]), "TEST_WINDOWS_LIVENESS") {
+		t.Fatal("CI gate must require the native Windows result")
+	}
+}
+
 func TestPRCIGateRequiresJSWasmHookExecution(t *testing.T) {
 	workflow := readCIWorkflow(t, "pr.yml")
 	job := workflow.job(t, "check-cmd-bd-puregeo-tests")
@@ -1482,7 +1506,7 @@ const (
 	uploadArtifactSHA   = "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 	downloadArtifactSHA = "3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 	checkoutSHA         = "3d3c42e5aac5ba805825da76410c181273ba90b1"
-	bazelCacheKeyPrefix = "bazel-repo-v2-${{ runner.os }}-"
+	bazelCacheKeyPrefix = "bazel-repo-v3-${{ runner.os }}-"
 	bazelCacheKey       = bazelCacheKeyPrefix + "${{ hashFiles('.bazelversion', 'MODULE.bazel.lock') }}"
 	bazelCachePath      = "${{ runner.temp }}/bazel-ci-cache"
 	// Save only from a push to main that missed the exact key: the content is
@@ -1781,14 +1805,21 @@ func TestBazelLaneIsGatedAlongsideLegacy(t *testing.T) {
 			}
 			callers++
 			// A caller forwards the RBE secrets: it must never run in a
-			// fork's privileged context (review D1 v2 N5).
-			for _, trigger := range yamlMapKeys(readYAMLNode(t, filepath.Join(".github", "workflows", entry.Name())), "on") {
-				if trigger == "pull_request_target" || trigger == "workflow_run" {
+			// fork's privileged context (review D1 v2 N5). The one
+			// deliberate exception is bazel-farm.yml, whose pull_request_target
+			// run is limited to allowlisted fork authors and whose every
+			// security property TestBazelFarmWorkflowSecurity pins.
+			triggers := yamlMapKeys(readYAMLNode(t, filepath.Join(".github", "workflows", entry.Name())), "on")
+			for _, trigger := range triggers {
+				if trigger == "workflow_run" || (trigger == "pull_request_target" && entry.Name() != bazelFarmWorkflowName) {
 					t.Errorf("%s calls %s and has trigger %s; a caller may not run with secrets in a fork PR's context", entry.Name(), bazelWorkflowName, trigger)
 				}
 			}
-			if entry.Name() != "pr.yml" && entry.Name() != "nightly.yml" {
-				t.Errorf("%s job %s calls %s; only pr.yml (PRs) and nightly.yml may", entry.Name(), jobName, bazelWorkflowName)
+			if entry.Name() == bazelFarmWorkflowName && !reflect.DeepEqual(triggers, []string{"pull_request_target"}) {
+				t.Errorf("%s triggers = %v, want exactly [pull_request_target]", entry.Name(), triggers)
+			}
+			if entry.Name() != "pr.yml" && entry.Name() != "nightly.yml" && entry.Name() != bazelFarmWorkflowName {
+				t.Errorf("%s job %s calls %s; only pr.yml (PRs), nightly.yml and %s (trusted forks) may", entry.Name(), jobName, bazelWorkflowName, bazelFarmWorkflowName)
 			}
 			got := map[string]string{}
 			if m, ok := job.Secrets.(map[string]any); ok {
@@ -1801,8 +1832,8 @@ func TestBazelLaneIsGatedAlongsideLegacy(t *testing.T) {
 			}
 		}
 	}
-	if callers != 2 {
-		t.Errorf("%d jobs call %s, want 2 (pr.yml, nightly.yml)", callers, bazelWorkflowName)
+	if callers != 3 {
+		t.Errorf("%d jobs call %s, want 3 (pr.yml, nightly.yml, %s)", callers, bazelWorkflowName, bazelFarmWorkflowName)
 	}
 
 	// The gate: needs the call and requires exactly BAZEL plus one id per
@@ -1926,8 +1957,9 @@ func TestBazelCallConcurrencyDiffersFromCallers(t *testing.T) {
 			"github.event_name": event,
 			"github.ref":        "refs/pull/123/merge",
 			"github.event.pull_request.number || github.ref": "123",
+			"github.event.pull_request.number":               "123",
 		}
-		if event != "pull_request" {
+		if event != "pull_request" && event != "pull_request_target" {
 			ctx["github.ref"] = "refs/heads/gh-readonly-queue/main/pr-123"
 			ctx["github.event.pull_request.number || github.ref"] = ctx["github.ref"]
 		}
@@ -1939,13 +1971,13 @@ func TestBazelCallConcurrencyDiffersFromCallers(t *testing.T) {
 			return v
 		})
 	}
-	for _, caller := range []string{"pr.yml", "nightly.yml"} {
+	for _, caller := range []string{"pr.yml", "nightly.yml", bazelFarmWorkflowName} {
 		callerGroup := group(caller)
 		if callerGroup == "" {
 			continue // no workflow-level group, nothing to collide with
 		}
 		name := yamlScalar(readYAMLNode(t, filepath.Join(".github", "workflows", caller)), "name")
-		for _, event := range []string{"pull_request", "merge_group", "push", "schedule", "workflow_dispatch"} {
+		for _, event := range []string{"pull_request", "pull_request_target", "merge_group", "push", "schedule", "workflow_dispatch"} {
 			if a, b := eval(bazelGroup, name, event), eval(callerGroup, name, event); a == b {
 				t.Errorf("%s event %s: %s's concurrency group %q equals the caller's; the call would deadlock", caller, event, bazelWorkflowName, a)
 			}
@@ -2187,7 +2219,7 @@ func TestBazelGateSimulation(t *testing.T) {
 // (409) or a download pick the wrong file. So every run that calls bazel.yml
 // (with its own inputs) must not upload any name twice (review D1 F7).
 func TestBazelArtifactNamesUniqueInCallerRuns(t *testing.T) {
-	for _, caller := range []string{"pr.yml", "nightly.yml"} {
+	for _, caller := range []string{"pr.yml", "nightly.yml", bazelFarmWorkflowName} {
 		t.Run(caller, func(t *testing.T) {
 			uses := collectRunArtifactUploads(t, caller, nil, "")
 			var sawBazel bool
@@ -3549,6 +3581,7 @@ func TestBazelRBEJobDecidesOnce(t *testing.T) {
 		"RBE_VAR_ON":    "${{ vars.RBE_WEST_WORKERS == 'true' }}",
 		"RBE_INPUT_OFF": "${{ inputs.rbe == 'off' }}",
 		"FORK":          "${{ github.event.pull_request.head.repo.fork == true }}",
+		"FORK_FARM":     bazelForkFarmValue,
 		"HAS_EXECUTOR":  bazelRBESecretValue,
 	}
 	if step.ID != "decide" || step.Uses != "" || step.Shell != "" || len(step.With) != 0 || !reflect.DeepEqual(step.Env, wantEnv) {
@@ -3580,9 +3613,14 @@ func TestBazelRBEJobDecidesOnce(t *testing.T) {
 	}
 
 	// Nothing outside the decision step re-derives the condition.
-	rederive := regexp.MustCompile(`(?i)vars\.RBE_WEST_WORKERS|inputs\.rbe\b|head\.repo\.fork|github\.actor|dependabot`)
+	rederive := regexp.MustCompile(`(?i)vars\.RBE_WEST_WORKERS|inputs\.rbe\b|inputs\.fork-farm|head\.repo\.fork|github\.actor|dependabot`)
 	walkYAML(readYAMLNode(t, filepath.Join(".github", "workflows", bazelWorkflowName)), "", func(path string, key bool, value string) {
 		if key || !rederive.MatchString(value) || strings.HasPrefix(path, ".jobs."+bazelRBEJobName+".steps[0].env.") {
+			return
+		}
+		// The checkout opt-in for fork code (TestBazelWorkflowForkFarmInputs
+		// pins it): a checkout input, not an execution-mode decision.
+		if value == bazelAllowUnsafeCheckout && strings.HasSuffix(path, ".with.allow-unsafe-pr-checkout") {
 			return
 		}
 		t.Errorf("%s: %s re-derives the execution mode (%q); read needs.rbe.outputs instead", bazelWorkflowName, path, value)
@@ -3592,24 +3630,33 @@ func TestBazelRBEJobDecidesOnce(t *testing.T) {
 	// on (its == is case-insensitive; a missing secret reads as '').
 	type facts struct {
 		rbeVar, rbeInput, secret string
-		fork                     bool
+		fork, farm               bool
 	}
 	cases := []struct {
 		name          string
 		in            facts
 		mode, enabled string
 	}{
-		{"same-repo PR with secrets", facts{"true", "", "grpcs://x", false}, "remote", "true"},
-		{"push to main", facts{"true", "", "grpcs://x", false}, "remote", "true"},
-		{"var in other case", facts{"True", "on", "grpcs://x", false}, "remote", "true"},
-		{"Dependabot PR (no secrets)", facts{"true", "", "", false}, "local", "false"},
-		{"fork PR", facts{"true", "", "", true}, "local", "false"},
-		{"fork PR, var unset", facts{"", "", "", true}, "local", "false"},
-		{"dispatch rbe=off", facts{"true", "off", "grpcs://x", false}, "local", "false"},
-		{"call rbe=OFF", facts{"true", "OFF", "grpcs://x", false}, "local", "false"},
-		{"same-repo, var unset", facts{"", "", "grpcs://x", false}, "skip", "false"},
-		{"Dependabot, var unset", facts{"", "", "", false}, "skip", "false"},
-		{"var false", facts{"false", "on", "grpcs://x", false}, "skip", "false"},
+		{"same-repo PR with secrets", facts{"true", "", "grpcs://x", false, false}, "remote", "true"},
+		{"push to main", facts{"true", "", "grpcs://x", false, false}, "remote", "true"},
+		{"var in other case", facts{"True", "on", "grpcs://x", false, false}, "remote", "true"},
+		{"Dependabot PR (no secrets)", facts{"true", "", "", false, false}, "local", "false"},
+		{"fork PR", facts{"true", "", "", true, false}, "local", "false"},
+		{"fork PR, var unset", facts{"", "", "", true, false}, "local", "false"},
+		{"dispatch rbe=off", facts{"true", "off", "grpcs://x", false, false}, "local", "false"},
+		{"call rbe=OFF", facts{"true", "OFF", "grpcs://x", false, false}, "local", "false"},
+		{"same-repo, var unset", facts{"", "", "grpcs://x", false, false}, "skip", "false"},
+		{"Dependabot, var unset", facts{"", "", "", false, false}, "skip", "false"},
+		{"var false", facts{"false", "on", "grpcs://x", false, false}, "skip", "false"},
+		// bazel-farm.yml's authorized fork runs: remote or nothing, never
+		// a second local run (pr.yml already runs one).
+		{"authorized fork farm", facts{"true", "", "grpcs://x", true, true}, "remote", "true"},
+		{"authorized fork farm, var unset", facts{"", "", "grpcs://x", true, true}, "skip", "false"},
+		{"authorized fork farm, no secret", facts{"true", "", "", true, true}, "skip", "false"},
+		{"authorized fork farm, rbe=off", facts{"true", "off", "grpcs://x", true, true}, "local", "false"},
+		// FORK_FARM without the secret (a fork's own pull_request run
+		// cannot make it true: it needs event pull_request_target).
+		{"fork, not authorized, secret", facts{"true", "", "grpcs://x", true, false}, "local", "false"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3617,6 +3664,7 @@ func TestBazelRBEJobDecidesOnce(t *testing.T) {
 				"RBE_VAR_ON":    strconv.FormatBool(strings.EqualFold(c.in.rbeVar, "true")),
 				"RBE_INPUT_OFF": strconv.FormatBool(strings.EqualFold(c.in.rbeInput, "off")),
 				"FORK":          strconv.FormatBool(c.in.fork),
+				"FORK_FARM":     strconv.FormatBool(c.in.farm),
 				"HAS_EXECUTOR":  strconv.FormatBool(c.in.secret != ""),
 			}
 			out, err := runBazelRBEDecision(t, step.Run, env)
@@ -3631,7 +3679,7 @@ func TestBazelRBEJobDecidesOnce(t *testing.T) {
 	}
 	// A value that is not a boolean fails the job rather than picking a mode.
 	if out, err := runBazelRBEDecision(t, step.Run, map[string]string{
-		"RBE_VAR_ON": "true", "RBE_INPUT_OFF": "false", "FORK": "", "HAS_EXECUTOR": "true",
+		"RBE_VAR_ON": "true", "RBE_INPUT_OFF": "false", "FORK": "", "FORK_FARM": "false", "HAS_EXECUTOR": "true",
 	}); err == nil {
 		t.Errorf("decision with FORK='' succeeded with %v; want failure", out)
 	}
@@ -3708,6 +3756,11 @@ func TestSetupBazelRCWriter(t *testing.T) {
 		}
 		if !strings.Contains(rc, "--repository_cache=") || strings.Contains(rc, "--disk_cache=") {
 			t.Errorf("local rc = %q; want --repository_cache and no --disk_cache (local runs never save it)", rc)
+		}
+		// The repo contents cache (extracted repos, never re-verified) would
+		// live in the runner cache: off.
+		if !strings.Contains(rc, "\ncommon --repo_contents_cache=\n") {
+			t.Errorf("rc = %q; want common --repo_contents_cache= (disabled)", rc)
 		}
 	})
 	for name, env := range map[string][]string{
@@ -3807,8 +3860,8 @@ func TestBazelSyncStepPublishesPatch(t *testing.T) {
 		}
 	}
 	upload := job.step(t, "Upload BUILD sync patch")
-	if upload.If != "${{ always() && steps.sync.outcome == 'failure' }}" {
-		t.Errorf("patch upload if = %q; want it gated on the sync step's failure", upload.If)
+	if upload.If != "${{ always() && steps.sync.outcome == 'failure' && github.event_name != 'pull_request_target' }}" {
+		t.Errorf("patch upload if = %q; want it gated on the sync step's failure, never from %s's pull_request_target runs", upload.If, bazelFarmWorkflowName)
 	}
 	if upload.With["name"] != "bazel-sync-patch" || upload.With["path"] != "${{ runner.temp }}/bazel-sync-patch/" ||
 		upload.With["if-no-files-found"] != "ignore" {
@@ -4158,4 +4211,29 @@ func yamlScalar(node *yaml.Node, key string) string {
 		}
 	}
 	return ""
+}
+
+// Release builds sign and attest what they build, so they must not restore
+// any Actions cache: setup-go's default cache is keyed predictably and falls
+// back to the default branch's module and build caches, which are not
+// re-verified (a poisoned build cache compiles straight into the binaries).
+func TestReleaseWorkflowRestoresNoCache(t *testing.T) {
+	workflow := readCIWorkflow(t, "release.yml")
+	setupGo := 0
+	for jobName, job := range workflow.Jobs {
+		for _, step := range job.Steps {
+			if strings.HasPrefix(step.Uses, "actions/cache") || strings.Contains(step.Uses, "/cache@") {
+				t.Errorf("release.yml job %q step %q uses %s; release builds must not restore caches", jobName, step.Name, step.Uses)
+			}
+			if strings.HasPrefix(step.Uses, "actions/setup-go@") {
+				setupGo++
+				if step.With["cache"] != "false" {
+					t.Errorf("release.yml job %q step %q: setup-go must set cache: false (got %q)", jobName, step.Name, step.With["cache"])
+				}
+			}
+		}
+	}
+	if setupGo == 0 {
+		t.Fatal("release.yml has no setup-go step; update this test")
+	}
 }

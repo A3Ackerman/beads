@@ -27,6 +27,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `BEADS_DOLT_POOL_READ_TIMEOUT` set below that now bounds import too; size the
   knob for your largest import, or leave it unset for the fallback.
 
+- **No-DB commands in a redirected workspace no longer lose the source
+  repo's `dolt_database`** (be-xil, be-fyt). `bd doctor`, `bootstrap`,
+  `context`, `dolt`, `init` and `version` skip store init, and the beads dir
+  they select is resolved through `beads.FindBeadsDir()`, which follows a
+  `.beads/redirect` internally. The source repo's configured database name was
+  therefore gone before anything could capture it, so `bd doctor` fell through
+  to the shared target directory's own default database and reported
+  `Dolt Schema: wrong database` — offering a `--fix` that would have repointed
+  the rig at an unrelated rig's store. The redirect source is now captured
+  before that resolution, matching the store-requiring path.
+- **An explicit `--db`, `BEADS_DB` or `BD_DB` target is no longer shadowed by
+  the ambient repo's redirect-source database** (be-fyt). `beads.GetRedirectInfo()`
+  deliberately resolves from the CWD repo's local `.beads` regardless of
+  `--db`/`BEADS_DIR` (bd-wayc3), so when the ambient repo itself had an active
+  redirect, the preservation above re-opened the same "wrong database" failure
+  through a narrower door. Preservation is now skipped whenever the caller
+  named an explicit target, asking the same question `selectedNoDBBeadsDir`
+  asks so the two cannot drift apart. Note that a `--db` value naming a
+  *database* rather than a path is not an explicit *directory* target: it is
+  consumed only on the store-requiring path, the ambient workspace is still
+  what gets selected, and its source database is still preserved.
+
+- **An ambient `BEADS_DOLT_SERVER_PORT` now marks a workspace externally
+  managed — suppressing auto-start — and no longer stops bd reaping its own
+  orphaned server**
+  ([#5934](https://github.com/gastownhall/beads/pull/5934)). Setting
+  `BEADS_DOLT_SERVER_PORT` (or the legacy `BEADS_DOLT_PORT`) now makes
+  `ResolveServerMode` classify a workspace as an externally-managed server, so
+  bd stops trying to own a lifecycle it does not own. The stale-server cleanup
+  path is deliberately carved out of that rule: it keeps resolving the mode
+  without the port var, so bd still reaps a same-repo orphan it started
+  (GH#2430) instead of declining because the environment named a port. A
+  `proxied-server` workspace is exempt from the new rule entirely — it reaches
+  its server through the proxy, so an ambient port does not describe its
+  lifecycle.
+
 - **`bd doctor` no longer flags a `.local_version` that starts with `v`.** The
   canonical spelling of a Go module version — and the string a build stamped
   from a Go pseudo-version reports and writes into `.local_version` itself —
