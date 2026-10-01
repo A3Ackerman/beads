@@ -2,10 +2,12 @@ package issueops
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	sqlmock "github.com/DATA-DOG/go-sqlmock"
 
+	"github.com/steveyegge/beads/internal/storage/sqlbuild"
 	"github.com/steveyegge/beads/internal/types"
 )
 
@@ -42,6 +44,25 @@ func TestFilterReadyWispsInTxUsesTheHoistedDescendantSet(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unexpected query sequence: %v", err)
+	}
+}
+
+// TestBuildReadyWorkPredicatesFromCarriesTheDescendantSet pins the other half
+// of the seam: the walk the issues leg resolved must ride readyWorkPredicates
+// to the wisp leg. If it is dropped, filterReadyWispsInTx sees an empty set
+// and silently excludes every parented wisp from a scoped ready call.
+func TestBuildReadyWorkPredicatesFromCarriesTheDescendantSet(t *testing.T) {
+	t.Parallel()
+
+	parent := "rw-parent"
+	descendants := []string{"rw-child", "rw-grandchild"}
+	filter := types.WorkFilter{ParentID: &parent, IncludeDeferred: true}
+	preds, err := buildReadyWorkPredicatesFrom(filter, IssuesFilterTables, sqlbuild.ReadyWorkWhereInputs{ParentDescendantIDs: descendants})
+	if err != nil {
+		t.Fatalf("buildReadyWorkPredicatesFrom: %v", err)
+	}
+	if !slices.Equal(preds.parentDescendantIDs, descendants) {
+		t.Fatalf("parentDescendantIDs = %v, want %v (the wisp leg reuses this set instead of walking again)", preds.parentDescendantIDs, descendants)
 	}
 }
 
