@@ -583,6 +583,44 @@ func TestHealNeverResurrectsRowsIntoALiveCursorTable(t *testing.T) {
 	}
 }
 
+// A scratch that survives only at HEAD — dropped from the working set by a
+// sweep whose drop was never committed — is still a stray: the gate must find
+// it through the HEAD probe, and the resume must sweep it (force-staging the
+// pending deletion) rather than treat it as a source of rows.
+func TestHealSweepsAScratchPendingDeletionAtHead(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		cursorPresent bool
+	}{
+		{name: "cursor present", cursorPresent: true},
+		// Even with the cursor missing and the pattern in effect, there are
+		// no rows to restore: an INSERT from a table absent from the working
+		// set would fail. Sweep only; the migration pass bootstraps the cursor.
+		{name: "cursor absent", cursorPresent: false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock := newMockDB(t)
+
+			expectIgnoredCursorGateScratchAtHead(mock, "")
+			expectIgnoreResolution(mock, "", ignoredSource.cursorTable, exactlyIgnored(true))
+			expectSchemaTableExists(mock, ignoredSource.cursorTable, tt.cursorPresent)
+			// Sweep only. A CREATE or INSERT here would be an unexpected statement.
+			expectIgnoredCursorScratchDrop(mock, true)
+
+			healed, err := healTrackedIgnoredCursorTable(context.Background(), db)
+			if err != nil {
+				t.Fatalf("healTrackedIgnoredCursorTable() error = %v", err)
+			}
+			if !healed {
+				t.Fatal("healTrackedIgnoredCursorTable() = false with a scratch pending deletion at HEAD, want true")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet SQL expectations: %v", err)
+			}
+		})
+	}
+}
+
 // The resume re-reads the operator veto rather than inheriting the decision
 // from whichever open crashed. An operator who resolved a crashed repair by
 // deliberately versioning the cursor table must not get stale rows pushed back
@@ -822,6 +860,46 @@ func TestAlreadyConvergedDeclinesOnASurvivingScratchTable(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet SQL expectations: %v", err)
+	}
+}
+
+// The server-mode half of the pending-deletion sweep: a scratch left only at
+// HEAD must decline the fast path too, qualified form included, or a server
+// fleet never reaches the locked path that commits the deletion.
+func TestAlreadyConvergedDeclinesOnAScratchPendingDeletionAtHead(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		qualifier string
+		prime     func(mock sqlmock.Sqlmock)
+		ignore    string
+		selector  DatabaseSelector
+	}{
+		{name: "session on target", qualifier: "",
+			prime:  func(mock sqlmock.Sqlmock) { expectCurrentDatabase(mock, "testdb") },
+			ignore: unqualifiedDoltIgnore},
+		{name: "selected by qualifier", qualifier: "`testdb`",
+			prime:    func(mock sqlmock.Sqlmock) { expectSessionPutOnDatabase(mock, "testdb") },
+			ignore:   qualifiedDoltIgnore("testdb"),
+			selector: testDatabaseSelector},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock := newMockDB(t)
+			tt.prime(mock)
+			expectNoMigrationWorkNeeded(mock)
+			expectDoltIgnoreRead(mock, tt.ignore, seededIgnorePatterns(LatestVersion()))
+			expectIgnoredCursorGateScratchAtHead(mock, tt.qualifier)
+
+			converged, err := alreadyConverged(context.Background(), db, "testdb", tt.selector)
+			if err != nil {
+				t.Fatalf("alreadyConverged() error = %v", err)
+			}
+			if converged {
+				t.Fatal("alreadyConverged() = true with a scratch pending deletion at HEAD, want false")
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet SQL expectations: %v", err)
+			}
+		})
 	}
 }
 
