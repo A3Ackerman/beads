@@ -114,17 +114,35 @@ func expectCursorCopyColumns(mock sqlmock.Sqlmock, table string, present int) st
 	return strings.Join(cursorTableColumns[:present], ", ")
 }
 
-// expectIgnoredCursorGate mocks the shared read-only gate.
+// expectScratchProbes mocks the gate's scratch half: the working-set probe,
+// then, only when that found nothing, the tracked-at-HEAD probe that catches a
+// scratch surviving only as a pending deletion.
+func expectScratchProbes(mock sqlmock.Sqlmock, qualifier string, inWorkingSet, atHead bool) {
+	expectSchemaTableExists(mock, ignoredCursorUntrackTempTable, inWorkingSet)
+	if !inWorkingSet {
+		expectHeadTableProbe(mock, qualifier, ignoredCursorUntrackTempTable, atHead)
+	}
+}
+
+// expectIgnoredCursorGate mocks the shared read-only gate. stray is a scratch
+// in the working set; expectIgnoredCursorGateScratchAtHead covers HEAD-only.
 func expectIgnoredCursorGate(mock sqlmock.Sqlmock, qualifier string, tracked bool, matches []doltIgnoreRow, stray bool) {
 	expectHeadTableProbe(mock, qualifier, ignoredSource.cursorTable, tracked)
 	if tracked {
 		expectIgnoreResolution(mock, qualifier, ignoredSource.cursorTable, matches)
 	}
-	expectSchemaTableExists(mock, ignoredCursorUntrackTempTable, stray)
+	expectScratchProbes(mock, qualifier, stray, false)
+}
+
+// expectIgnoredCursorGateScratchAtHead mocks the gate on a database whose
+// cursor is healthy and whose scratch exists only at HEAD.
+func expectIgnoredCursorGateScratchAtHead(mock sqlmock.Sqlmock, qualifier string) {
+	expectHeadTableProbe(mock, qualifier, ignoredSource.cursorTable, false)
+	expectScratchProbes(mock, qualifier, false, true)
 }
 
 // expectIgnoredCursorHealNoop mocks the whole open-time reconcile on a healthy
-// database, as MigrateUp calls it: two reads, no writes — the property that
+// database, as MigrateUp calls it: three reads, no writes — the property that
 // keeps this safe to run through a SELECT/DML-only fence.
 func expectIgnoredCursorHealNoop(mock sqlmock.Sqlmock) {
 	expectIgnoredCursorGate(mock, "", false, nil, false)
@@ -207,12 +225,12 @@ func expectIgnoredCursorRestore(mock sqlmock.Sqlmock, sweptIntoHead bool) {
 	expectIgnoredCursorScratchDrop(mock, sweptIntoHead)
 }
 
-// TestHealSkipsHealthyDatabaseInTwoReads is the hot-path contract. Every bd
-// invocation that opens a writable store pays this, so it must be two reads
-// and nothing else — no write, no DDL, no commit — and both must be
+// TestHealSkipsHealthyDatabaseInThreeReads is the hot-path contract. Every bd
+// invocation that opens a writable store pays this, so it must be three reads
+// and nothing else — no write, no DDL, no commit — and all must be
 // statements that SUCCEED, or the pooled Dolt session ends up pinned to a
 // stale catalog snapshot for the rest of its life (be-bv7x).
-func TestHealSkipsHealthyDatabaseInTwoReads(t *testing.T) {
+func TestHealSkipsHealthyDatabaseInThreeReads(t *testing.T) {
 	db, mock := newMockDB(t)
 
 	expectIgnoredCursorHealNoop(mock)
@@ -764,7 +782,7 @@ func TestAlreadyConvergedDeclinesOnALegacyTrackedCursor(t *testing.T) {
 	expectDoltIgnoreRead(mock, unqualifiedDoltIgnore, seededIgnorePatterns(LatestVersion()))
 	expectHeadTableProbe(mock, "", ignoredSource.cursorTable, true)
 	expectIgnoreResolution(mock, "", ignoredSource.cursorTable, exactlyIgnored(true))
-	expectSchemaTableExists(mock, ignoredCursorUntrackTempTable, false)
+	expectScratchProbes(mock, "", false, false)
 
 	converged, err := alreadyConverged(context.Background(), db, "testdb", nil)
 	if err != nil {
@@ -793,7 +811,7 @@ func TestAlreadyConvergedDeclinesOnASurvivingScratchTable(t *testing.T) {
 	expectNoMigrationWorkNeeded(mock)
 	expectDoltIgnoreRead(mock, unqualifiedDoltIgnore, seededIgnorePatterns(LatestVersion()))
 	expectHeadTableProbe(mock, "", ignoredSource.cursorTable, false)
-	expectSchemaTableExists(mock, ignoredCursorUntrackTempTable, true)
+	expectScratchProbes(mock, "", true, false)
 
 	converged, err := alreadyConverged(context.Background(), db, "testdb", nil)
 	if err != nil {
@@ -820,7 +838,7 @@ func TestAlreadyConvergedAcceptsATrackedCursorTheOperatorUnignored(t *testing.T)
 	expectDoltIgnoreRead(mock, unqualifiedDoltIgnore, seededIgnorePatterns(LatestVersion()))
 	expectHeadTableProbe(mock, "", ignoredSource.cursorTable, true)
 	expectIgnoreResolution(mock, "", ignoredSource.cursorTable, exactlyIgnored(false))
-	expectSchemaTableExists(mock, ignoredCursorUntrackTempTable, false)
+	expectScratchProbes(mock, "", false, false)
 	expectMigrationLockProbe(mock, "testdb", 1)
 
 	converged, err := alreadyConverged(context.Background(), db, "testdb", nil)
@@ -864,7 +882,7 @@ func TestAlreadyConvergedKeepsTheLockProbeLast(t *testing.T) {
 	expectDoltIgnoreRead(mock, unqualifiedDoltIgnore, seededIgnorePatterns(LatestVersion()))
 	expectHeadTableProbe(mock, "", ignoredSource.cursorTable, true)
 	expectIgnoreResolution(mock, "", ignoredSource.cursorTable, exactlyIgnored(true))
-	expectSchemaTableExists(mock, ignoredCursorUntrackTempTable, false)
+	expectScratchProbes(mock, "", false, false)
 
 	if _, err := alreadyConverged(context.Background(), db, "testdb", nil); err != nil {
 		t.Fatalf("alreadyConverged() error = %v", err)
