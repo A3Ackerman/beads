@@ -152,6 +152,7 @@
 15 1 TestEmbeddedRelationsAnswersAWispTargetInTheOutDirection
 15 1 TestEmbeddedRelationsLeavesAnExternalTargetOutOfTheAnswer
 15 1 TestEmbeddedRoleFixtureKitHooksAreUsable
+15 1 TestIgnoredCursorScratchTrackedAtHeadIsSweptOnOpen
 15 1 TestLifecycleCreateContract
 15 1 TestMergeWithStrategy_OursKeepsLocal
 
@@ -317,6 +318,7 @@
 15 7 TestJournalContract
 15 7 TestLifecycleCloseReopenContract
 15 7 TestReclaimAnyReplicaOverride
+15 7 TestScratchHeadProbeSucceedsOnABrandNewDatabase
 15 7 TestTreeWalkerContract
 15 7 TestWithPeerAuth_DivergedRemoteURLFailsClosed
 
@@ -372,6 +374,7 @@
 15 9 TestEmbeddedReaderReadyPageWiderThanTheHydrationBatchIsStillThatPrefix
 15 9 TestEventsSinceEmbedded
 15 9 TestIgnoredCursorHealConvergesFromEveryCrashState
+15 9 TestIgnoredCursorScratchPendingDeletionIsSweptOnOpen
 15 9 TestLegacyTrackedIgnoredCursorUnwedgesPull
 15 9 TestMetadataCASContract
 15 9 TestPromoteStillWorksWithCollisionGuard
@@ -539,5 +542,6 @@
 15 15 TestGetIssueCommentsPageEmbedded
 15 15 TestGetReadyWorkIncludeEphemeralExcludesNonReadyWisps
 15 15 TestIgnoredCursorHealIsIdempotent
+15 15 TestIgnoredCursorScratchPendingDeletionWithCursorMissingSweepsOnly
 15 15 TestReadyWorkStatementBudget
 15 15 TestReleaserContract
