@@ -53,7 +53,7 @@ Follow-up automation should replace marker-only checks with generated or
 | `adr/0001-multi-remote-approach.md` | Keep | ADR; historical decision record, not a live reference table. |
 | `adr/0002-init-safety-invariants.md` | Keep | ADR backing `RECOVERY.md` and init safety code. |
 | `adr/0003-provenance-event-log.md` | Keep | ADR; historical decision record for the `provenance_events` table and `bd provenance` command group. Status: Proposed pending a maintainer post on issue 4460. |
-| `adr/0004-missing-database-guard-signal.md` | Keep | ADR; settles the proof-of-prior-init signal for the missing-database init guards. Extends `adr/0002`. Status: Proposed. |
+| `adr/0004-missing-database-guard-signal.md` | Keep | ADR; settles the proof-of-prior-init signal for the missing-database init guards. Extends `adr/0002`. Status: Accepted. |
 | `ADVANCED.md` | Keep/revise as needed | User-facing advanced workflows; mixed command examples should defer to generated CLI reference when expanded. |
 | `AIDER_INTEGRATION.md` | Keep | User-facing integration guide; evidence is setup/integration behaviour. |
 | `ANTIVIRUS.md` | Keep | User-facing operational note; review vendor/version claims when touched. |
@@ -63,7 +63,7 @@ Follow-up automation should replace marker-only checks with generated or
 | `BDP_GRAPH_ARCHITECTURE.md` | Keep | Graph-plane design record; ruled contracts and dated dependency sources, not runtime or merge clearance. |
 | `BDP_GRAPH_CLI_AND_STORAGE_SPEC.md` | Keep | Graph-plane design record; ruled contracts and dated dependency sources, not runtime or merge clearance. |
 | `CLAUDE_INTEGRATION.md` | Keep | Design/user guide for Claude setup; paired with `SETUP.md`. |
-| `CLAUDE.md` | Revise | Kept as architecture orientation only; command/workflow duplication was reduced in favour of root `AGENTS.md` and `AGENT_INSTRUCTIONS.md`. |
+| `AGENTS.md` (`CLAUDE.md` is a symlink to it) | Keep | Contributor orientation for `engdocs/`: verified pointers only; workflow rules live in the root `AGENTS.md`. |
 | `CLI_REFERENCE.md` | Keep/generated | Generated command reference from live help output. |
 | `CI_CLEANUP_PLAN.md` | Keep as maintainer context | Dated CI policy, measurements, and implementation roadmap; current commands live in workflows and the `Makefile`. |
 | `CI_REQUIRED_CHECK_TOPOLOGY.md` | Keep as maintainer context | Implemented workflow design record for aggregate-gate policy; branch-protection and ruleset adoption remain pending. Live job membership and display names come from `.github/workflows/*.yml` and their structural tests; copied wiring and rollout steps are historical snapshots. |

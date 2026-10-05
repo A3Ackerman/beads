@@ -37,11 +37,16 @@ var (
 	ErrAlreadyIdentified = issueops.ErrAlreadyIdentified
 	ErrVersionMismatch   = issueops.ErrVersionMismatch
 	ErrStatusMismatch    = issueops.ErrStatusMismatch
+	ErrNotesOverwrite    = issueops.ErrNotesOverwrite
 )
 
 // CloseOpenChildrenError reports the issue and open-child count that refused a
 // guarded close. See issueops.CloseOpenChildrenError.
 type CloseOpenChildrenError = issueops.CloseOpenChildrenError
+
+// VersionMismatchError reports the expected and current row versions that
+// refused a guarded write. See issueops.VersionMismatchError.
+type VersionMismatchError = issueops.VersionMismatchError
 
 // ErrNotOwner is returned when an actor tries to unclaim an issue that is claimed
 // by a different actor. Releasing another actor's claim requires the force
