@@ -50,7 +50,7 @@ type closeDirectPlan struct {
 func closeDirectPreflight(results []*RoutedResult, resolvedIDs, reasons []string, force bool) closeDirectPlan {
 	plan := closeDirectPlan{refusals: make([]string, len(resolvedIDs))}
 	for i, id := range resolvedIDs {
-		if refusal := closeDirectCheckOne(id, results[i].Issue, force); refusal != "" {
+		if refusal := closeDirectCheckOne(id, results[i].Issue, results[i].Store, force); refusal != "" {
 			plan.refusals[i] = refusal
 			continue
 		}
@@ -65,8 +65,8 @@ func closeDirectPreflight(results []*RoutedResult, resolvedIDs, reasons []string
 }
 
 // closeDirectCheckOne returns one argument's refusal, or "" when it may go to
-// the batch.
-func closeDirectCheckOne(id string, issue *types.Issue, force bool) string {
+// the batch. st is the store that owns the issue.
+func closeDirectCheckOne(id string, issue *types.Issue, st storage.DoltStorage, force bool) string {
 	// Close validation guards a state change; a row already at literal
 	// StatusClosed has none to guard, so skip it and let the re-close reach the
 	// engine as the idempotent no-op it has always been (ga-ktn9pe.4.8).
@@ -88,7 +88,7 @@ func closeDirectCheckOne(id string, issue *types.Issue, force bool) string {
 
 	// Gate satisfaction for machine-checkable gates (GH#1467).
 	if !force {
-		if err := checkGateSatisfaction(issue); err != nil {
+		if err := checkGateSatisfaction(issue, st); err != nil {
 			return fmt.Sprintf("cannot close %s: %s", id, err)
 		}
 	}

@@ -30,30 +30,42 @@ type gateCheckApply struct {
 	updated   []*types.Issue
 	closeErrs map[string]error
 	awaitErrs map[string]error
+	seenErrs  map[string]error
 }
 
+// proxiedFreshReadGetter reads bead gate targets in proxied-server mode, each
+// lookup in a fresh read transaction. A target can be an issue or a wisp. A
+// local miss falls back to prefix routing like the direct getter; proxied
+// mode has no contributor auto-routing.
 type proxiedFreshReadGetter struct{}
 
-func (proxiedFreshReadGetter) GetIssue(ctx context.Context, id string) (*types.Issue, error) {
+func (g proxiedFreshReadGetter) GetIssue(ctx context.Context, id string) (*types.Issue, error) {
+	issue, _, err := g.getBeadGateTarget(ctx, id)
+	return issue, err
+}
+
+func (proxiedFreshReadGetter) getBeadGateTarget(ctx context.Context, id string) (*types.Issue, bool, error) {
 	uw, err := proxiedOpenReadUOW(ctx)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	issue, localErr := uw.IssueUseCase().GetIssue(ctx, id)
+	issue, _, localErr := workapi.GetIssueOrWisp(ctx, workapi.NewUOWDetailSource(uw), id)
 	uw.Close(ctx)
 	if localErr == nil {
-		return issue, nil
+		return issue, true, nil
 	}
 	if !gateProxiedNotFound(localErr) {
-		return nil, localErr
+		return nil, false, localErr
 	}
 
-	result, routeErr := resolveViaPrefixRouting(ctx, id)
+	routed, routeErr := prefixRoutedBeadGateTarget(ctx, id)
 	if routeErr != nil {
-		return nil, localErr
+		return nil, false, routeErr
 	}
-	defer result.Close()
-	return result.Issue, nil
+	if routed != nil {
+		return routed, false, nil
+	}
+	return nil, true, localErr
 }
 
 func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
@@ -83,10 +95,16 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 	}
 
 	discovered := map[string]string{}
+	var seen []*types.Issue
 	var persistAwaitID func(gateID, runID string) error
+	var recordSeen func(gate *types.Issue) error
 	if !dryRun {
 		persistAwaitID = func(gateID, runID string) error {
 			discovered[gateID] = runID
+			return nil
+		}
+		recordSeen = func(gate *types.Issue) error {
+			seen = append(seen, gate)
 			return nil
 		}
 	}
@@ -107,7 +125,7 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 		printNoOpenGates(gateTypeFilter)
 		return nil
 	}
-	results := evaluateGates(ctx, filteredGates, time.Now(), proxiedFreshReadGetter{}, persistAwaitID)
+	results := evaluateGates(ctx, filteredGates, time.Now(), proxiedFreshReadGetter{}, persistAwaitID, recordSeen)
 
 	if dryRun {
 		resolved, escalated, errCount := applyGateCheckResults(results, true, escalateFlag, nil)
@@ -118,6 +136,7 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 		out := gateCheckApply{
 			closeErrs: map[string]error{},
 			awaitErrs: map[string]error{},
+			seenErrs:  map[string]error{},
 		}
 
 		for gateID, runID := range discovered {
@@ -128,6 +147,14 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 			if after, getErr := uw.IssueUseCase().GetIssue(ctx, gateID); getErr == nil && after != nil {
 				out.updated = append(out.updated, after)
 			}
+		}
+
+		for _, gate := range seen {
+			if err := recordBeadGateSeenProxied(ctx, uw, gate); err != nil {
+				out.seenErrs[gate.ID] = err
+				continue
+			}
+			out.updated = append(out.updated, gate)
 		}
 
 		for _, r := range results {
@@ -177,6 +204,11 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 			results[i].escalated = false
 			results[i].err = awaitErr
 		}
+		if seenErr, failed := applied.seenErrs[results[i].gate.ID]; failed {
+			results[i].resolved = false
+			results[i].escalated = false
+			results[i].err = seenErr
+		}
 	}
 
 	resolved, escalated, errCount := applyGateCheckResults(results, false, escalateFlag,
@@ -184,6 +216,21 @@ func runGateCheckProxiedServer(cmd *cobra.Command, ctx context.Context) error {
 			return applied.closeErrs[gate.ID]
 		})
 	return printGateCheckSummary(len(results), resolved, escalated, errCount, dryRun)
+}
+
+// recordBeadGateSeenProxied is the proxied-server form of the direct route's
+// recordSeen write: it stamps beadGateSeenKey on a bead gate, which may be an
+// issue or a wisp.
+func recordBeadGateSeenProxied(ctx context.Context, uw uow.UnitOfWork, gate *types.Issue) error {
+	_, isWisp, err := workapi.GetIssueOrWisp(ctx, workapi.NewUOWDetailSource(uw), gate.ID)
+	if err == nil {
+		err = proxiedUpdateByID(ctx, uw, gate.ID, isWisp, beadGateSeenUpdate(gate.AwaitID))
+	}
+	if err != nil {
+		targetID, _ := beadGateTargetID(gate.AwaitID)
+		return fmt.Errorf("recording that bead %s exists: %w", targetID, err)
+	}
+	return nil
 }
 
 // gateProxiedNotFound reports whether an issue lookup failed because the row

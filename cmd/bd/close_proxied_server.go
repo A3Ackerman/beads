@@ -314,7 +314,7 @@ func closeProxiedCheckOne(ctx context.Context, uw uow.UnitOfWork, id string, in 
 	// unprefixed, so both routes now spell one refusal one way.
 
 	if !in.force {
-		if err := checkGateSatisfaction(current); err != nil {
+		if err := checkGateSatisfaction(current, nil); err != nil {
 			return fmt.Sprintf("cannot close %s: %s", id, err), nil
 		}
 	}

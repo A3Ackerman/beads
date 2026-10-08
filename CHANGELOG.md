@@ -1491,9 +1491,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   override) rather than letting a dead store read as satisfied. On the
   classic and proxied routes alike, `bd gate check` now exits non-zero
   whenever any gate it checks (gh, timer, or bead) could not be checked or
-  closed. A missing bead still stays pending, and for now so does a bead in
-  a prefix-routed rig whose store cannot be read: routing still reports that
-  failure as not-found.
+  closed. A bead in a prefix-routed rig whose store cannot be read stays
+  pending, with the routing failure in its reason (`cannot confirm the
+  awaited bead is gone`); for a missing bead, see
+  [#6395](https://github.com/gastownhall/beads/pull/6395).
+
+- **`bd gate check` resolves a bead gate whose awaited bead was deleted**
+  ([#6395](https://github.com/gastownhall/beads/pull/6395)). A bead gate
+  waited for its target to close, so deleting the target left the gate
+  pending forever and its step blocked. The first `bd gate check` that finds
+  the target in this rig's own store now records the sighting in the gate's
+  metadata (`await_seen`), and a later check that no longer finds it there
+  resolves the gate (`awaited bead <id> no longer exists`). An await ID that
+  no check has seen, such as a typo or a bead deleted before the first check,
+  stays pending with a diagnostic instead of unblocking the step: correct the
+  await ID or close the gate with `bd gate resolve`. A miss outside this
+  rig's store (a target whose prefix routes to another rig, or a contributor
+  auto-routed store) does not prove the bead gone, so the gate stays pending
+  and the reason names the cause. `bd close` on a bead gate follows the same
+  rule: it no longer needs `--force` once an earlier check saw the awaited
+  bead and the bead is gone from the gate's rig, with no route pointing
+  elsewhere. `bd rename` and `bd rename-prefix` point a bead gate at its
+  bead's new ID, sighting included, so a renamed bead does not read as
+  deleted, even to a check or `bd close` that read the gate before the
+  rename; a rename that fails partway leaves the gate pending without a
+  sighting, never resolved. A rename by an older bd does not move the
+  gate: if a check had already seen the bead, a later check or `bd close`
+  treats that rename as a deletion and closes the gate while the bead is
+  still open, so upgrade every client that renames beads together with the
+  ones that check gates.
 
 - **An epic that blocks on its own children no longer hides them from `bd
   ready`** ([#6506](https://github.com/gastownhall/beads/issues/6506)). A

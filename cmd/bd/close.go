@@ -676,8 +676,10 @@ func isMachineCheckableGate(issue *types.Issue) bool {
 }
 
 // checkGateSatisfaction checks whether a gate issue's condition is satisfied.
+// gateStore is the store that owns the gate (nil on the proxied-server route);
+// see closeBeadGateGetter.
 // Returns nil if the gate is satisfied (or not a machine-checkable gate), or an error describing why it cannot be closed.
-func checkGateSatisfaction(issue *types.Issue) error {
+func checkGateSatisfaction(issue *types.Issue, gateStore storage.DoltStorage) error {
 	if !isMachineCheckableGate(issue) {
 		return nil
 	}
@@ -695,7 +697,9 @@ func checkGateSatisfaction(issue *types.Issue) error {
 	case issue.AwaitType == "timer":
 		resolved, escalated, reason, err = checkTimer(issue, time.Now())
 	case issue.AwaitType == "bead":
-		resolved, reason, err = checkBeadGate(rootCtx, closeBeadGateGetter(), issue.AwaitID)
+		// bd gate check's rule, without recording a sighting: a missing
+		// bead no check ever saw does not satisfy the gate.
+		resolved, reason, err = evaluateBeadGate(rootCtx, issue, closeBeadGateGetter(gateStore), nil)
 		if err != nil {
 			// Unlike the gh:* and timer arms above, a bead gate whose store
 			// cannot be read stays closed: the close would need that same
@@ -726,17 +730,16 @@ func checkGateSatisfaction(issue *types.Issue) error {
 }
 
 // closeBeadGateGetter picks the bead-gate lookup the current route can serve.
-// The proxied-server route never opens the local store (the root pre-run
-// short-circuits to uowProvider), so a store-backed getter there refused every
-// bead gate with "no local store available" even when the awaited bead was
-// closed (#5861); that route now reads through the same fresh-read getter
-// `bd gate check` uses. The direct and embedded routes keep the store-backed
-// local -> prefix-route lookup.
-func closeBeadGateGetter() issueGetter {
+// The direct and embedded routes look the awaited bead up from gateStore, the
+// store that owns the gate, as bd gate check in that rig would: for a gate
+// reached through a route, the launcher's store can report an open bead as
+// missing. The proxied-server route never opens a local store, so it reads
+// through the same fresh-read getter bd gate check uses there (#5861).
+func closeBeadGateGetter(gateStore storage.DoltStorage) issueGetter {
 	if usesProxiedServer() {
 		return proxiedFreshReadGetter{}
 	}
-	return routedBeadGateGetter{localStore: store}
+	return routedBeadGateGetter{localStore: gateStore}
 }
 
 // autoCloseCompletedMolecule checks if closing a step completed an auto-closing
