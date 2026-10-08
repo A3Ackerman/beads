@@ -190,7 +190,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **`bd delete` no longer rewrites a citation of a surviving child into a
-  `[deleted:…]` marker for its parent.** The rule that turns a deleted id
+  `[deleted:…]` marker for its parent.**
+  ([#7377](https://github.com/gastownhall/beads/pull/7377)). The rule that
+  turns a deleted id
   into `[deleted:<id>]` in its neighbours' text treated `.` as a boundary,
   and a hierarchical child's id is its parent's plus `.<n>`. Deleting
   `bd-a1.1` turned "step bd-a1.1.2 failed" into
