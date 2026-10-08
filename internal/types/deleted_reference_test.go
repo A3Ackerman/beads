@@ -1,16 +1,16 @@
-package issueops
+package types
 
 import (
 	"strings"
 	"testing"
 )
 
-// rewriteAsTheRoleDoes applies the citation rule the way
-// RewriteDeletedReferencesInTx applies it to one field: one pass per deleted
-// id, in the order given, each pass over the previous pass's result.
+// rewriteAsTheRoleDoes applies the citation rule the way both delete bodies
+// apply it to one field: one pass per deleted id, in the order given, each pass
+// over the previous pass's result.
 func rewriteAsTheRoleDoes(text string, deletedIDs ...string) string {
 	for _, id := range deletedIDs {
-		text = DeletedReferencePattern(id).ReplaceAllString(text, `$1[deleted:`+id+`]$3`)
+		text = RewriteDeletedReferences(DeletedReferencePattern(id), text, id)
 	}
 	return text
 }
@@ -49,9 +49,10 @@ func TestDeletedReferencePatternDoesNotMatchInsideDescendantID(t *testing.T) {
 	}
 }
 
-// The edge a fix for the descendant case must not break: a `.` that ends a
-// sentence is not part of the id it follows, and neither is any other
-// punctuation. These are rewritten at this commit and must stay rewritten.
+// The edge the descendant rule must not break: a `.` that ends a sentence is
+// not part of the id it follows, and neither is any other punctuation. Every
+// citation here is rewritten, including a second one that shares its boundary
+// character with the first.
 func TestDeletedReferencePatternRewritesCitationBeforePunctuation(t *testing.T) {
 	t.Parallel()
 
@@ -74,6 +75,10 @@ func TestDeletedReferencePatternRewritesCitationBeforePunctuation(t *testing.T) 
 			text:    "see fx-k0008.1. fx-k0008.1 is the parent",
 			want:    "see [deleted:fx-k0008.1]. [deleted:fx-k0008.1] is the parent",
 		},
+		// One boundary character between two citations: a rewrite that resumed
+		// after the whole match swallowed it and left the second verbatim.
+		{name: "same id twice, one space apart", deleted: "be-1", text: "be-1 be-1", want: "[deleted:be-1] [deleted:be-1]"},
+		{name: "same id twice, one comma apart", deleted: "be-1", text: "(be-1,be-1)", want: "([deleted:be-1],[deleted:be-1])"},
 		// The word-boundary half the existing rule already gets right, kept so
 		// the fix cannot trade one for the other.
 		{name: "longer id sharing the prefix", deleted: "be-1", text: "be-12 and xbe-1", want: "be-12 and xbe-1"},
