@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/steveyegge/beads/internal/httpapi/apigen"
@@ -84,6 +85,9 @@ func (b *httpBatchApplier) ApplyBatch(ctx context.Context, req issueops.ApplyBat
 		return issueops.ApplyBatchResult{}, invalid(
 			"a batch apply carries %d items; the limit is %d per request", len(req.Items), issueops.MaxApplyBatchItems)
 	}
+	if err := b.refuseUnservedDepAddLineage(ctx, req); err != nil {
+		return issueops.ApplyBatchResult{}, err
+	}
 
 	body, err := applyBatchBody(req)
 	if err != nil {
@@ -94,6 +98,41 @@ func (b *httpBatchApplier) ApplyBatch(ctx context.Context, req issueops.ApplyBat
 		return issueops.ApplyBatchResult{}, applyBatchRefusal(err)
 	}
 	return decodeApplyBatchResult(req, resp)
+}
+
+// refuseUnservedDepAddLineage scans the whole plan once, before the dial, for
+// a dep_add item naming ThreadID, or HasSpawner on a waits-for edge (the one
+// type the role reads it on; see depAddNamesSpawner). Neither member is served
+// unless the handshake snapshot advertises wire.CapBatchApplyDepAddLineage:
+// an older server has never heard of either and would answer them with its
+// generic unknown-member 400 at best, or (once a server DOES know the
+// members but this gate were skipped) silently honor a field the caller
+// never meant to send past an unupgraded fleet. So this checks the
+// capability once for the whole request — never per item, and never after
+// the dial.
+func (b *httpBatchApplier) refuseUnservedDepAddLineage(ctx context.Context, req issueops.ApplyBatchRequest) error {
+	carriesLineage := false
+	for _, item := range req.Items {
+		if item.Kind == issueops.ItemDepAdd && depAddCarriesLineage(item.DepAdd) {
+			carriesLineage = true
+			break
+		}
+	}
+	if !carriesLineage {
+		return nil
+	}
+	snap, err := b.store.snapshot(ctx)
+	if err != nil {
+		return err
+	}
+	// snap is nil, nil whenever Store.snapshot has no transport AND no cached
+	// handshake (a Store built with a nil wire): nothing was ever advertised,
+	// so this falls straight through to the refusal below rather than
+	// dereferencing a nil *apigen.ContextResponse.
+	if snap != nil && slices.Contains(snap.Capabilities, wire.CapBatchApplyDepAddLineage) {
+		return nil
+	}
+	return b.store.unsupportedCapability("BatchApplier.ApplyBatch", wire.CapBatchApplyDepAddLineage)
 }
 
 // applyBatchBody projects the role's request onto the wire body.
@@ -368,15 +407,6 @@ func applyDepAddItemBody(item *issueops.DepAddItem) (*apigen.ApplyDepAddItem, er
 	if item.Type == "" {
 		return nil, invalid("a dep_add item names no edge type")
 	}
-	// ApplyDepAddItem publishes neither member below, so each refuses where the
-	// role would store something the wire cannot say. The spawner flag only
-	// does that on a waits-for edge; the role ignores it on every other type.
-	switch {
-	case item.HasSpawner && item.Type == issueops.DepWaitsFor:
-		return nil, refuse(encode.OpApplyBatch, "W-DepAddItem.HasSpawner")
-	case item.ThreadID != "":
-		return nil, refuse(encode.OpApplyBatch, "W-DepAddItem.ThreadID")
-	}
 	out := &apigen.ApplyDepAddItem{Source: source, Target: target, Type: string(item.Type)}
 	// A BLANK blob is ABSENT, not malformed, and reading it any other way is a
 	// real bug rather than strictness: the role's own rule is that an absent,
@@ -390,7 +420,32 @@ func applyDepAddItemBody(item *issueops.DepAddItem) (*apigen.ApplyDepAddItem, er
 		}
 		out.Metadata = apigen.MetadataValue(blob)
 	}
+	// HasSpawner and ThreadID are gated by CapBatchApplyDepAddLineage
+	// (checked in ApplyBatch, before the dial, over the whole request) —
+	// this projection only encodes what the gate already cleared, which is
+	// why HasSpawner is sent only where depAddNamesSpawner holds.
+	setItemBool(&out.HasSpawner, depAddNamesSpawner(item))
+	setItemString(&out.ThreadId, item.ThreadID)
 	return out, nil
+}
+
+// depAddCarriesLineage reports whether a dep_add item names a member
+// CapBatchApplyDepAddLineage gates: ThreadID on any edge, HasSpawner only
+// where depAddNamesSpawner holds. Used to scan a whole request once before
+// the dial, rather than discovering the gap one item at a time after bytes
+// already left for the wire.
+func depAddCarriesLineage(item *issueops.DepAddItem) bool {
+	return item != nil && (depAddNamesSpawner(item) || item.ThreadID != "")
+}
+
+// depAddNamesSpawner reports whether a dep_add item's HasSpawner means
+// anything: the role reads it on a waits-for edge only and ignores it on
+// every other type. Off a waits-for edge the flag is therefore dropped, not
+// sent, and never needs the capability — dropping it loses nothing the role
+// would store, where refusing it would fail a mixed-version request the
+// flag cannot change.
+func depAddNamesSpawner(item *issueops.DepAddItem) bool {
+	return item.HasSpawner && item.Type == issueops.DepWaitsFor
 }
 
 // applyRefBody projects one ref, applying the exactly-one rule the schema
