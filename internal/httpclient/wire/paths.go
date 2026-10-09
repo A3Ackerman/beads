@@ -56,6 +56,7 @@ const (
 	OpRememberMemory          = "rememberMemory"
 	OpGetMemory               = "getMemory"
 	OpForgetMemory            = "forgetMemory"
+	OpBatchGetIssues          = "batchGetIssues"
 )
 
 // The paths that carry no caller-supplied segment. A path with one is built by
@@ -73,6 +74,7 @@ const (
 	PathIssuesDelete         = "/v0/beads/issues:delete"
 	PathIssuesBatchCreate    = "/v0/beads/issues:batchCreate"
 	PathIssuesBatchClose     = "/v0/beads/issues:batchClose"
+	PathIssuesBatchGet       = "/v0/beads/issues:batchGet"
 	PathIssuesClaimNext      = "/v0/beads/issues:claimNext"
 	PathIssuesBatchApply     = "/v0/beads/issues:batchApply"
 	PathSettings             = "/v0/beads/config"
