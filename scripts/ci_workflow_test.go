@@ -1941,8 +1941,8 @@ const bazelIntegIf = "${{ (needs.rbe.outputs.enabled == 'true' || needs.rbe.outp
 const bazelPackageGatesIf = "${{ inputs.package-gates == 'on' }}"
 
 // F3: the package gates' runners (bazelPackageRunsOn, in
-// ci_blacksmith_runner_test.go with the other runner sizes) are larger than
-// bazel.yml's usual 2 vCPU because they run pytest/npm on the runner itself.
+// ci_blacksmith_runner_test.go with the other runner sizes) are sized for
+// pytest/npm on the runner itself, not for a Bazel client alone.
 // Mode remote only: the gates take no rbe-fork certificate, so fork modes
 // (enabled too) build bd with go build on a GitHub-hosted runner, as before.
 
@@ -2164,11 +2164,11 @@ func TestBazelWorkflowJobsAndExecutionMode(t *testing.T) {
 			// lane does: its build is --config=integration's.
 			wantJobIf = bazelIntegIf
 		} else if name == bazelRBEPrewarmJobName {
-			// Same runs-on ternary as every other lane (wantRunsOn, set
-			// above); only the if differs. Not a lane: never uses
+			// The lanes' runs-on ternary at 2 vCPU (no Bazel client); only
+			// the size and the if differ. Not a lane: never uses
 			// setup-bazel, so wantJobSetupEnv is moot (the per-step check
 			// below only fires for a setup-bazel step).
-			wantJobIf = bazelRBEPrewarmIf
+			wantJobRunsOn, wantJobIf = bazelPrewarmRunsOn, bazelRBEPrewarmIf
 		}
 		if job.RunsOn != wantJobRunsOn {
 			t.Errorf("%s runs-on = %q, want %q", name, job.RunsOn, wantJobRunsOn)
@@ -2516,7 +2516,7 @@ func TestPRPolicyChecksRunAsBazelTargets(t *testing.T) {
 		{"scripts/repochecks/BUILD.bazel", "workapi_frontend_boundary_test", `"scripts/check-workapi-frontend-boundary.sh"`, ""},
 		{"scripts/repochecks/BUILD.bazel", "types_gen_drift_test", `"types_gen_drift_test.sh"`, ""},
 		{"internal/versioncheck/BUILD.bazel", "versioncheck_test", `"//:release_metadata_files"`, ""},
-		{"scripts/BUILD.bazel", "scripts_test", `"check_testing_short_test.go"`, ""},
+		{"scripts/BUILD.bazel", "go_sources_test", `"testing_short_tree_test.go"`, ""},
 		{"scripts/BUILD.bazel", "doc_freshness_required_test", `"-required-suite=doc-freshness"`, `["integration-only"]`},
 		{"scripts/gitattributespolicy/BUILD.bazel", "gitattributespolicy_required_host_test", `"-required-host"`, ""},
 	} {
@@ -3896,9 +3896,6 @@ sh_test(
 	}
 }
 
-// The default shard manifest of a PR Risk shard script.
-var shardManifestDefault = regexp.MustCompile(`\$\{BEADS_TEST_SHARD_MANIFEST:-([^}]+)\}`)
-
 // bazelAttrBlock returns the text of a list attribute (`    name = [` up to
 // its closing `    ],`) of a rule block from bazelRuleBlock, or "".
 func bazelAttrBlock(rule, name string) string {
@@ -3911,40 +3908,6 @@ func bazelAttrBlock(rule, name string) string {
 		return rule[i:]
 	}
 	return rule[i : i+end+7]
-}
-
-// bazelRuleBlock returns the text of the top-level rule named name in a
-// BUILD file, or "" if there is none.
-func bazelRuleBlock(build, name string) string {
-	i := strings.Index(build, "\n    name = \""+name+"\",\n")
-	if i < 0 {
-		return ""
-	}
-	start := strings.LastIndex(build[:i], "\n") + 1
-	end := strings.Index(build[i:], "\n)\n")
-	if end < 0 {
-		return build[start:]
-	}
-	return build[start : i+end+3]
-}
-
-// bazelProxiedShardCount returns cmd/bd:bd_proxied_test's own shard_count
-// from cmd/bd/BUILD.bazel: the single source of truth for the Bazel-only
-// bazel-proxied lane's shard split, which no longer has to equal PR
-// Risk's/main.yml's legacy test-proxied-cmd jobs' matrix size (F2).
-func bazelProxiedShardCount(t *testing.T) int {
-	t.Helper()
-	root := sourceRepoRoot(t)
-	rule := bazelRuleBlock(readPolicyFile(t, root, "cmd/bd/BUILD.bazel"), "bd_proxied_test")
-	m := regexp.MustCompile(`(?m)^    shard_count = (\d+),$`).FindStringSubmatch(rule)
-	if m == nil {
-		t.Fatalf("cmd/bd:bd_proxied_test has no `shard_count = N,` in cmd/bd/BUILD.bazel:\n%s", rule)
-	}
-	n, err := strconv.Atoi(m[1])
-	if err != nil {
-		t.Fatalf("cmd/bd:bd_proxied_test shard_count: %v", err)
-	}
-	return n
 }
 
 // bazel-integration mirrors main.yml's integration jobs with the unmodified
@@ -5755,6 +5718,13 @@ func TestBazelGatedLanesNeverRetryFlakyTests(t *testing.T) {
 			case ".git", "node_modules", ".beads":
 				return filepath.SkipDir
 			}
+			// Not in the checkout: under Bazel, the --run_under wrapper's
+			// PATH directory (//tools/bazel:hermetic_bin) is in every
+			// test's runfiles, and a line-by-line scan of its pinned dolt
+			// binary took a minute on a remote worker.
+			if filepath.ToSlash(rel) == "tools/bazel/hermetic_bin" {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if !isFileOrFileLink(path, d) {
@@ -5831,9 +5801,11 @@ func btoi(b bool) int {
 // whole integration-tagged cmd/bd suite against a hermetic dolt sql-server,
 // because every other lane, Bazel or go test, runs cmd/bd with
 // BEADS_TEST_SKIP=dolt or only a manifest's tests, so its Dolt-gated tests
-// ran nowhere. Coverage is exact by construction: the target passes the
-// binary no test selection, the Go binary shards itself over every
-// top-level test, and check_testcases.py fails a shard that ran none.
+// ran nowhere. Coverage is exact by construction: the target's only test
+// selection is go_test_pinned_shard.sh's, whose round-robin shards skip
+// exactly the tests its pinned shards run (TestPinnedShardWrapperSplit,
+// TestPinnedShardManifests), and check_testcases.py fails a shard that ran
+// none.
 func TestBazelCmdDoltJob(t *testing.T) {
 	const config, target = "doltserver-cmd", "bd_dolt_server_test"
 	workflow := readCIWorkflow(t, bazelWorkflowName)
@@ -5911,8 +5883,8 @@ func TestBazelCmdDoltJob(t *testing.T) {
 		t.Error(err)
 	}
 	for _, want := range []string{
-		`srcs = ["//tools/bazel:go_test_variant.sh"]`,
-		`args = ["$(rootpath :bd_test)"]`,
+		`srcs = ["//tools/bazel:go_test_pinned_shard.sh"]`,
+		"args = [\n        \"$(rootpath :dolt_server_pinned_shards.txt)\",\n        \"$(rootpath :bd_test)\",\n    ]",
 		`tags = ["dolt-server-cmd"]`,
 		`"GOMAXPROCS": "4"`,
 		`"BEADS_TEST_GIT_IDENTITY": "1"`,
@@ -5921,12 +5893,14 @@ func TestBazelCmdDoltJob(t *testing.T) {
 			t.Errorf("%s lacks %s", target, want)
 		}
 	}
-	// 16 shards: each pays ~30-40 s of fixed cost (TestMain, its own dolt
-	// sql-server), so more shards mostly add farm actions; with the suite's
-	// long pole gone the slowest of 16 stays within bazel-integration's
-	// critical path. Change it together with bazel.yml's comment.
-	if m := regexp.MustCompile(`shard_count = (\d+)`).FindStringSubmatch(rule); m == nil || m[1] != "16" {
-		t.Errorf("%s shard_count = %v, want 16", target, m)
+	// 32 shards: 16 that run the slowest tests the manifest pins to them
+	// and 16 round-robin shards over the rest. Measured, a shard's fixed
+	// cost (TestMain, its own dolt sql-server) is a few seconds; the wall
+	// time is the serial sum of its tests, which round-robin alone left at
+	// 2-3x the median on the shard that drew the long tests. Change it
+	// together with bazel.yml's comment.
+	if m := regexp.MustCompile(`shard_count = (\d+)`).FindStringSubmatch(rule); m == nil || m[1] != "32" {
+		t.Errorf("%s shard_count = %v, want 32", target, m)
 	}
 	envKey := regexp.MustCompile(`"(BEADS_TEST_[A-Z_]+)": "\$\(rlocationpath [^)]+\)"`)
 	for _, m := range envKey.FindAllStringSubmatch(bdTest, -1) {
@@ -6067,4 +6041,32 @@ func (e *ciWorkflowEnvironment) UnmarshalYAML(value *yaml.Node) error {
 	}
 	e.Name, e.URL = m.Name, m.URL
 	return nil
+}
+
+func TestDoltImagePullWorkflowsUseRetryHelper(t *testing.T) {
+	// No workflow pulls the image: every Dolt suite runs on hermetic dolt
+	// sql-servers (bazel.yml's dolt-server lanes) and needs no docker, since
+	// pr-risk.yml's container-backed legacy tiers were retired
+	// (ga-96smfk.22). The helper stays for local container-backed runs.
+	wantCalls := map[string]int{}
+
+	workflowsDir := filepath.Join(sourceRepoRoot(t), ".github", "workflows")
+	workflowPaths, err := filepath.Glob(filepath.Join(workflowsDir, "*.y*ml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range workflowPaths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		text := string(data)
+		name := filepath.Base(path)
+		if got, want := strings.Count(text, "run: ./scripts/ci/pull-dolt-image.sh"), wantCalls[name]; got != want {
+			t.Errorf("%s retry-helper calls = %d, want %d", name, got, want)
+		}
+		if strings.Contains(text, "docker pull "+doltSQLServerImage) {
+			t.Errorf("%s still pulls the Dolt image without retries", name)
+		}
+	}
 }

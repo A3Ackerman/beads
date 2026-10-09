@@ -919,11 +919,16 @@ Required` requires them to have run remotely and passed.
     (`PR Lint (native|windows|darwin)`) jobs are retired.
   - The repository policy tests (`./scripts/...`, including the D2 guards)
     and the tests that walk the checkout run only under Bazel, remotely:
-    `//scripts:scripts_test` and `//test/docsync:docsync_test` take
-    `//:repo_files` as data, the checkout as Bazel sees it (every tracked
-    file outside `.bazelignore`, aggregated from the `repo_files` block
-    `tools/bazel/go_srcs.py` keeps in every package; the BUILD sync step's
-    `make bazel-sync-check` fails on a package without it). The release
+    the `//scripts` go_tests and `//test/docsync:docsync_test`, each over
+    the part of the checkout it reads. `tools/bazel/go_srcs.py` keeps a
+    `repo_files` block in every package that partitions its files into
+    `repo_go_srcs`, `repo_go_test_srcs`, `repo_doc_files` and
+    `repo_other_files`, aggregated at the root; their union `//:repo_files`
+    is every tracked file outside `.bazelignore`, which only
+    `//scripts:tracked_files_test` and two repository guards read (the
+    BUILD sync step's `make bazel-sync-check` fails on a package without
+    the block). So a Go-only change re-runs no workflow policy test, and a
+    docs-only or workflow-only change no Go-source scan. The release
     formula under `.bazelignore`d `.beads/` comes in as `@beads_formulas`.
     Their former `go test` legs (`Go checks (scripts-test)` and
     `Go checks (allowlisted)`) are gone.
@@ -1034,9 +1039,9 @@ Required` requires them to have run remotely and passed.
   - `tools/bazel/check_shard_coverage.py` runs after each tier. It requires:
     - every Bazel shard of `//cmd/bd:bd_embedded_test` (50; the manifest's
       frozen 20-shard block was the retired `test-embedded-cmd` jobs' split,
-      F1), `//internal/storage/embeddeddolt:embeddeddolt_embedded_test` (15;
+      F1), `//internal/storage/embeddeddolt:embeddeddolt_embedded_test` (20;
       the frozen 5-shard block was `test-embedded-storage`'s, F1),
-      `//cmd/bd:bd_proxied_test` (30; the frozen 15-shard block was
+      `//cmd/bd:bd_proxied_test` (44; the frozen 15-shard block was
       `test-proxied-cmd`'s, F2) and
       `//internal/storage/dolt:dolt_server_full_test` (16) to have run
       exactly the tests its shard script lists (list-only mode, minus
@@ -1066,7 +1071,7 @@ Required` requires them to have run remotely and passed.
   Its Tier 3, the served HTTP corpus (`./internal/httpclient` with
   `BEADS_TEST_EMBEDDED_DOLT=1` and `BEADS_HTTP_TEST_REQUIRED=1`), runs in
   the embedded lane as `//internal/httpclient:httpclient_served_test`
-  (race build, 24 shards).
+  (race build, 16 shards).
   `docs-mintlify.yml` likewise drops its docsync job (`go test
   ./test/docsync`, which `bazel-test` runs as `//test/docsync:docsync_test`)
   and keeps only Mintlify's network-bound broken-link check.
@@ -1176,7 +1181,7 @@ changes. They gate through `BAZEL_TEST`; pinned by
 | fast-checks: migration hygiene checks A and B | `//scripts/repochecks:migration_hygiene_test` (`MIGRATION_HYGIENE_SCOPE=tree`) |
 | fast-checks: `make fmt-check` | `//scripts/repochecks:fmt_test` (the registered SDK's gofmt) |
 | PR Policy: `checkworkflowtags` | `//scripts/repochecks:workflow_tags_test` |
-| PR Policy: `check-testing-short.sh` | `//scripts:scripts_test` (`TestCheckTestingShortPassesOnCleanRepoTree`) |
+| PR Policy: `check-testing-short.sh` | `//scripts:go_sources_test` (`TestCheckTestingShortPassesOnCleanRepoTree`) |
 | PR Policy: workapi frontend boundary | `//scripts/repochecks:workapi_frontend_boundary_test` |
 | PR Policy: `make api-check` drift | `//scripts/repochecks:types_gen_drift_test`; its `go test ./internal/httpapi/...` half is the httpapi targets in the same lane |
 | PR Policy / check-doc-flags: `check-doc-freshness.sh` | `//scripts/repochecks:doc_freshness_test` |
@@ -1269,7 +1274,7 @@ lane runs `//internal/storage/dolt:dolt_server_full_test` (16 shards) and
 ### Regression Tests
 
 `regression.yml` is retired. The suite runs as
-`//tests/regression:regression_test` (8 shards) in `bazel.yml`'s
+`//tests/regression:regression_test` (14 shards) in `bazel.yml`'s
 `bazel-cmd-dolt` lane, which `pr.yml`'s `CI Gate / Required` requires
 (`BAZEL_CMD_DOLT_REQUIRED`), so regression is now part of the aggregate gate
 on PRs and merge groups instead of a separate, path-detected advisory
