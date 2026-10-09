@@ -2420,8 +2420,10 @@ paths:
         `closed_by_session` and `close_reason` — written under first-close-wins
         by `{id}:close`, which a patch write would bypass. A `status` that
         crosses into the done category still answers to close POLICY here; it
-        does not acquire the close's semantics, which is why `{id}:close`
-        remains the operation to reach for when what you mean is "close this".
+        does not acquire the close's semantics, and that includes its close
+        guards: a patch is never refused `issue_pinned` or `not_assignee`.
+        That is why `{id}:close` remains the operation to reach for when what
+        you mean is "close this".
 
 
         `created_at`, `created_by` — `POST /v0/beads/issues` withholds them for
@@ -3202,8 +3204,33 @@ paths:
         the blockers themselves travel in `blockers`). The MEMBER'S PRESENCE is
         the discriminator, so telling the two apart never requires reading
         `detail`. Both refusals are the ROLE's, so `force`
-        bypasses those two and nothing else — this endpoint cannot skip a guard
-        by forgetting one exists.
+        bypasses those two — this endpoint cannot skip a guard by forgetting
+        one exists.
+
+
+        ## Close guards
+
+
+        Before close policy, a close of an issue that is not already closed
+        answers to three guards, in this order. A template refuses with
+        `409` / `template_read_only` and has no bypass. A pinned issue (the
+        `pinned` flag or the `pinned` status) refuses with `409` /
+        `issue_pinned`. An issue assigned to someone other than `actor`
+        (compared separator-insensitively; an unassigned issue is closable by
+        anyone) refuses with `409` / `not_assignee`, carrying the holder in
+        `assignee`. `force` bypasses the pin and the assignee guard. They are
+        the guards `bd close` applies, and they are the ROLE's, so every close
+        operation — this one, `POST /v0/beads/issues:batchClose` and a
+        `close` item of `POST /v0/beads/issues:batchApply` — applies them
+        alike. An idempotent re-close is not guarded: it changes nothing.
+
+
+        The guards gate the close operations, not the closed state. A status
+        update that crosses into the done category — a `PATCH` of
+        `/v0/beads/issues/{id}` or an `update` item of
+        `POST /v0/beads/issues:batchApply` — is not a close operation and
+        answers to close policy only, so it still closes a pinned issue or one
+        another actor holds.
 
 
         ## The guard
@@ -3297,8 +3324,13 @@ paths:
             bypass both. `force` does NOT bypass the guard above.
 
 
-            Nothing was written in either case.
-          x-bd-codes: [not_closable, precondition_failed]
+            `template_read_only`, `issue_pinned` and `not_assignee`: a close
+            guard refused (see "Close guards"). `not_assignee` carries the
+            holder in `assignee`. `force` bypasses the latter two.
+
+
+            Nothing was written in any case.
+          x-bd-codes: [issue_pinned, not_assignee, not_closable, precondition_failed, template_read_only]
           content:
             application/problem+json:
               schema:
@@ -4338,9 +4370,16 @@ paths:
             per-item bypasses, and a forced item never earns this.
 
 
-            `template_read_only` is an `update` item whose target is a
-            template, exactly as `PATCH /v0/beads/issues/{id}` answers it; no
-            item member bypasses it.
+            `template_read_only` is an `update` or a `close` item whose target
+            is a template, exactly as `PATCH /v0/beads/issues/{id}` and
+            `POST /v0/beads/issues/{id}:close` answer it; no item member
+            bypasses it.
+
+
+            `issue_pinned` and `not_assignee` are the other two close guards
+            refusing a `close` item, exactly as
+            `POST /v0/beads/issues/{id}:close` answers them; `not_assignee`
+            carries the holder in `assignee`. `close.force` bypasses both.
 
 
             `already_claimed` is the assignee fence: an `update` whose
@@ -4372,8 +4411,8 @@ paths:
             a malformed request.
           x-bd-codes:
             [already_claimed, already_exists, dependency_cycle,
-             dependency_exists, not_closable, notes_overwrite_refused, precondition_failed,
-             template_read_only]
+             dependency_exists, issue_pinned, not_assignee, not_closable,
+             notes_overwrite_refused, precondition_failed, template_read_only]
           content:
             application/problem+json:
               schema:
@@ -4421,8 +4460,9 @@ paths:
         contract: a refusal OF THE REQUEST is a problem document, and a refusal
         OF AN ITEM is a member of that item's outcome. `code` on an outcome is
         the same vocabulary `Problem.code` publishes, restricted to
-        `not_found` and `not_closable`, so a client classifies an item exactly
-        as it classifies a request.
+        `not_found`, `not_closable` and the three close guards
+        (`template_read_only`, `issue_pinned`, `not_assignee`), so a client
+        classifies an item exactly as it classifies a request.
 
 
         WHAT IS ATOMIC IS EVERYTHING THAT LANDS: one transaction, at most one
@@ -4466,8 +4506,9 @@ paths:
 
         NO PER-ITEM PRECONDITION. There is no counterpart here to a
         compare-and-set guard, matching the role, so `force` is a question with
-        only two answers: it bypasses blocker and open-child close policy for
-        every item, and it never bypasses validation or existence.
+        only two answers: it bypasses blocker and open-child close policy, the
+        pin and the assignee guard for every item, and it never bypasses the
+        template guard, validation or existence.
 
 
         ## Hooks and auto-commit
@@ -10452,7 +10493,8 @@ components:
           default: false
           description: >-
             Bypasses close policy — the open-children refusal and the
-            live-blocker refusal — and nothing else.
+            live-blocker refusal — and the pin and the assignee guard, and
+            nothing else: never the template guard.
 
 
             CLOSE POLICY EVALUATES AT THIS ITEM, against the row as this request
@@ -11065,10 +11107,11 @@ components:
           default: false
           description: >-
             Bypass close policy — the open-children refusal and the live-blocker
-            refusal — for EVERY item, and nothing else. It never bypasses
-            validation and it never bypasses existence: an id that names nothing
-            refuses whether or not this is set. It is request-wide because the
-            flag that spells it is.
+            refusal — and the pin and the assignee guard for EVERY item, and
+            nothing else. It never bypasses the template guard or validation,
+            and it never bypasses existence: an id that names nothing refuses
+            whether or not this is set. It is request-wide because the flag
+            that spells it is.
 
     BatchCloseItem:
       type: object
@@ -11161,13 +11204,22 @@ components:
             refused THIS item, exactly as `Problem.blockers` carries them for
             the single close, and optional for the same reason. Absent on a
             successful item and on every other refusal.
+        assignee:
+          type: string
+          description: >-
+            With `not_assignee`: the issue's assignee the refusing transaction
+            observed, exactly as `Problem.assignee` carries it for the single
+            close. Absent on a successful item and on every other refusal.
         code:
           type: string
           description: >-
             This item's refusal, from `Problem.code`'s vocabulary and restricted
-            to `not_found` (the id names no row in either plane) and
+            to `not_found` (the id names no row in either plane),
             `not_closable` (close policy refused it: open children, or a live
-            blocker — see `open_children`). ABSENT means the item succeeded.
+            blocker — see `open_children`), and the close guards
+            `template_read_only`, `issue_pinned` and `not_assignee` (see
+            `assignee`), exactly as the single close answers them. ABSENT means
+            the item succeeded.
 
 
             It is the problem vocabulary rather than a second one because an
@@ -11246,9 +11298,11 @@ components:
           default: false
           description: >-
             Bypass close policy — the open-children refusal and the
-            live-blocker refusal — and nothing else. The refusals are the
-            ROLE's, so this endpoint cannot skip a guard by forgetting one
-            exists. A forced close still reports `open_children`.
+            live-blocker refusal — and the pin and the assignee guard, and
+            nothing else: never the template guard (see "Close guards" on
+            `POST /v0/beads/issues/{id}:close`). The refusals are the ROLE's,
+            so this endpoint cannot skip a guard by forgetting one exists. A
+            forced close still reports `open_children`.
 
 
             IT BYPASSES POLICY, NEVER A PRECONDITION. `expected_version` is
@@ -12185,7 +12239,8 @@ components:
             configured with a token file), `not_found` (404),
             `already_claimed` (409), `not_claimable` (409),
             `not_closable` (409), `not_releasable` (409),
-            `template_read_only` (409),
+            `template_read_only` (409), `issue_pinned` (409),
+            `not_assignee` (409),
             `dependency_cycle` (409), `dependency_exists` (409),
             `already_exists` (409), `precondition_failed` (409),
             `events_journal_disabled` (409), `events_journal_truncated` (410),
@@ -12245,7 +12300,9 @@ components:
           type: string
           description: >-
             With `already_claimed`: the actor currently holding the issue, read
-            inside the transaction that refused.
+            inside the transaction that refused. With `not_assignee`: the
+            issue's assignee the refusing close observed — always present on
+            that code.
 
 
             IT IS OPTIONAL ON EVERY OPERATION BUT THE CLAIM. `POST

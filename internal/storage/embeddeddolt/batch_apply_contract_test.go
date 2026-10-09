@@ -193,6 +193,9 @@ func TestBatchApplyContract(t *testing.T) {
 	t.Run("SplicesTheMetadataOfATemplateItCreates", func(t *testing.T) {
 		conformance.RunBatchApplySplicesTheMetadataOfATemplateItCreates(t, ctx, fixture)
 	})
+	t.Run("CloseItemsAnswerToTheCloseGuards", func(t *testing.T) {
+		conformance.RunBatchApplyCloseItemsAnswerToTheCloseGuards(t, ctx, fixture)
+	})
 }
 
 // newEmbeddedBatchApplyFixture composes the frozen role kit with this backend's

@@ -60,6 +60,7 @@ var roleContractCases = []roleContract{
 		RunBatchApplyRefusesAnUnusableRequest,
 		RunBatchApplyUpdateItemsRefuseATemplate,
 		RunBatchApplySplicesTheMetadataOfATemplateItCreates,
+		RunBatchApplyCloseItemsAnswerToTheCloseGuards,
 	),
 
 	roleCases("BatchCloser", "BatchCloser()", oncePerRole,
@@ -84,6 +85,7 @@ var roleContractCases = []roleContract{
 		RunBatchCloserAllRefusedBatchRecordsNoHistory,
 		RunBatchCloserDoesNotMutateTheCallerRequest,
 		RunBatchCloserSettlesTheDependersOfWhatItClosed,
+		RunBatchCloserItemsAnswerToTheCloseGuards,
 	),
 
 	roleCases("BatchCreator", "BatchCreator()", oncePerRole,
@@ -442,6 +444,7 @@ var roleContractCases = []roleContract{
 		RunLifecycleCloseSettlesTheClosedRowItselfAndItsChild,
 		RunLifecycleCloseOnASpawnersLastChildSatisfiesAWaitsForGate,
 		RunLifecycleReopenReblocksItsDependers,
+		RunLifecycleCloseEnforcesTheCloseGuards,
 	),
 
 	// The accessor-reachable half of Lifecycle.Create, moved out of the staging
