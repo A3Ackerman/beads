@@ -94,7 +94,11 @@ go_library(
 go_test(
     name = "embeddeddolt_test",
     # -race -short runs ~6 min unsharded (pr-core gives go test -timeout=30m).
-    # Bazel shards by test count, not duration.
+    # Bazel shards by test count, not duration: rules_go deals tests out
+    # round-robin. At 8 shards one shard drew TestWithPeerAuth,
+    # TestWithPeerAuth_WarnsWhenStoredPeerSuppressesAmbientPassword and
+    # TestPushCommitsPendingChangesFirst (100-153s on rbe-west); 9 spreads
+    # them (measured costs put the heaviest shard at ~87s).
     size = "large",
     timeout = "long",
     srcs = [
@@ -230,7 +234,7 @@ go_test(
         "workspace_config_contract_test.go",
     ],
     embed = [":embeddeddolt"],
-    shard_count = 8,
+    shard_count = 9,
     deps = [
         "//:beads",
         "//backend/conformance",
@@ -265,10 +269,10 @@ go_test(
     ],
 )
 
-# Runs 15 Bazel shards against every top-level Test* function in
+# Runs 20 Bazel shards against every top-level Test* function in
 # internal/storage/embeddeddolt/*_test.go but TestConformance, assigned by
-# the manifest's 15-shard block (duration-balanced; see
-# scripts/ci/embedded_storage_test_durations.json), with
+# the manifest's 20-shard block (duration-balanced on rbe-west measurements;
+# see scripts/ci/embedded_storage_test_durations.json), with
 # BEADS_TEST_EMBEDDED_DOLT=1; the wrapper points
 # BEADS_TEST_EMBEDDED_TEST_BINARY at this binary, which the concurrency test
 # re-executes. This is a *different* shard count from PR Risk's legacy
@@ -304,7 +308,7 @@ sh_test(
         "//:.github/scripts/embedded-storage-test-shards.txt",
     ],
     env = {"BEADS_TEST_EMBEDDED_DOLT": "1"},
-    shard_count = 15,
+    shard_count = 20,
     tags = ["embedded"],
 )
 
