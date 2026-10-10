@@ -230,6 +230,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pinned issues or beads another actor holds must send `force` (`Force` on the
   request), or reclaim the bead first; the close operations never close a
   template, forced or not (pour it instead).
+- **BREAKING (out-of-tree storage backends): a create without a priority now
+  arrives as priority 0 with `DefaultPriority` set.** `bd create` without
+  `--priority`, a `bd create --graph` node without `priority` and a
+  `bd create --file` template without a valid `### Priority` used to reach a
+  backend's `IssueLifecycle().Create`, `BatchCreator().CreateBatch` and
+  `BatchApplier().ApplyBatch` as priority 2. They now arrive as priority 0
+  with `issueops.CreateRequest.DefaultPriority` (or `BatchCreateItem` /
+  `CreateItem.DefaultPriority`) set, as does an HTTP create without
+  `priority` when `bd serve` fronts the backend. The fields are additive, so
+  such a backend compiles unchanged, but the shared preparation that applies
+  the default lives under `internal/`, so a backend that ignores the flag now
+  stores P0 (critical) for those `bd create` paths, and still stores P0 for
+  that HTTP create. Migration: store `issueops.DefaultCreatePriority` when
+  `DefaultPriority` is set, and refuse `DefaultPriority` with a non-zero
+  priority as `ErrValidation`; `conformance.RunRoleContracts` checks both
+  through `RunLifecycleCreateAppliesTheDefaultPriority`,
+  `RunBatchCreatorAppliesTheDefaultPriority` and
+  `RunBatchApplyAppliesTheDefaultPriority`.
 
 ### Fixed
 - **An update of a template is now refused for every caller, not only
@@ -279,6 +297,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   stored (a `bd create --parent` child) an HTTP caller now gets that 400 where
   it used to get 409 `dependency_cycle` (a blocking type) or
   `dependency_exists` (any other type).
+- An HTTP create (`issues:create`, `issues:batchCreate`, a `batch:apply`
+  create item) that omits `priority` now stores the create default, P2, as the
+  spec documents, instead of P0 (critical). The default lives in one place:
+  `issueops.CreateRequest.DefaultPriority` (and `BatchCreateItem` /
+  `CreateItem.DefaultPriority`) asks the shared create preparation to store
+  `issueops.DefaultCreatePriority`; the handlers set it for an absent member,
+  the HTTP client omits `priority` for it only when the server advertises the
+  new additive `issues.create.defaultPriority` handshake token (an older
+  `bd serve` reads an absent `priority` as P0, so a new client sends `2`
+  explicitly to it), and `bd create` (no `--priority`),
+  `bd create --graph` (a node without `priority`) and `bd create --file` (a
+  template without `### Priority`) rely on it rather than spelling 2. An
+  explicit `0` is still P0, and `DefaultPriority` with a non-zero priority is
+  `ErrValidation`. CLI output is unchanged on the in-tree backends, except
+  that `bd create --file` now warns on stderr about a `### Priority` it cannot
+  parse, as it already did for `### Type`, rather than dropping it silently.
+  The client decides from the handshake its store cached (once per command
+  in `bd`), so a create that lands on an older build behind the same URL (a
+  `bd serve` rolled back under a live store, or mixed builds during a
+  rollout) still stores P0, with no error on either side.
+  Out-of-tree storage backends must now honor `DefaultPriority`; see the
+  BREAKING (out-of-tree storage backends) entry under `### Changed`.
 - **PRs based on `hotfix/**` branches now run full CI, not just
   cross-version historical smokes and triage labeling.** `pr.yml`,
   `pr-risk.yml`, `conformance.yml`, `cross-version-smoke.yml` and
