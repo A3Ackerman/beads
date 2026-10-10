@@ -335,6 +335,7 @@
 34 12 TestProxiedServerReadyB
 34 12 TestProxiedServerReadyWisp
 34 12 TestProxiedServerReclaim
+34 12 TestProxiedServerShowCommentsTail
 34 12 TestProxiedServerUnclaim
 
 34 13 TestProxiedServerCompactDolt

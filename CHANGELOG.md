@@ -24,6 +24,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `dolt.auto-commit` the way `bd prune` does, as
   `bd: reclaim N expired lease(s)` on both routes. Over a connected HTTP
   workspace `bd reclaim` now works instead of refusing.
+- **`bd show --comments-tail N`** renders only the last N comments in text
+  output (including under `--watch`)
+  ([#6618](https://github.com/gastownhall/beads/pull/6618)), preceded by one
+  elision line naming how many older ones were hidden. A render-only cap for
+  fat, append-only beads whose full comment history is hundreds of KB —
+  description and metadata are unchanged, and omitting the flag (or passing
+  `0`) is byte-identical to today's output. JSON output is untouched;
+  `--include-comments` still streams every comment there.
+
 - `bd create --graph` now plans its batch through `issueops.BatchApplier`
   instead of the old `buildDomainGraphPlan` path, so a graph create gets the
   same atomic multi-row semantics as `bd batch apply`. A `waits-for` edge's
@@ -1350,15 +1359,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is the stale side. Only `bd init`'s own open gets this wording; every other
   open, including the library API, `bd doctor --fix` and `bd bootstrap`, keeps
   the existing message.
-
-- **`bd show --comments-tail N`** renders only the last N comments in text
-  output (including under `--watch`)
-  ([#6618](https://github.com/gastownhall/beads/pull/6618)), preceded by one
-  elision line naming how many older ones were hidden. A render-only cap for
-  fat, append-only beads whose full comment history is hundreds of KB —
-  description and metadata are unchanged, and omitting the flag (or passing
-  `0`) is byte-identical to today's output. JSON output is untouched;
-  `--include-comments` still streams every comment there.
 
 ### Changed
 
