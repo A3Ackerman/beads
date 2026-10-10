@@ -890,6 +890,19 @@ func TestApplyBatchMapsTheRolesTypedRefusalsOntoTheDocumentedCodes(t *testing.T)
 			wantCode:   "not_found",
 		},
 		{
+			// The dotted-id hierarchy rule is request validation (it unwraps to
+			// ErrValidation), never the hierarchy CONFLICT's dependency_cycle:
+			// it is decided from the two resolved ids, ahead of every check that
+			// reads the stored graph, so even a child whose parent-child edge IS
+			// stored gets this 400, with no hierarchy members to describe.
+			name: "a dotted child gated on its own parent",
+			err: itemErr(0, issueops.ItemDepAdd, "", "bd-1.1",
+				&issueops.DottedChildDependencyError{IssueID: "bd-1.1", DependsOnID: "bd-1", Type: issueops.DepBlocks}),
+			wantStatus: http.StatusBadRequest,
+			wantCode:   "invalid_argument",
+			wantParam:  "items",
+		},
+		{
 			name:       "the workspace's own validation",
 			err:        itemErr(0, issueops.ItemCreate, "", "", storage.ErrValidation),
 			wantStatus: http.StatusBadRequest,

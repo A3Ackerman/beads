@@ -202,6 +202,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   amendment to a released migration must land as a new migration (0070+, or
   ignored 0028+, as of this change) so installed schemas and freshly-migrated
   ones cannot fork.
+- **BREAKING: the close guards now hold for every close operation, not only
+  `bd close`.** The template read-only guard, the pin guard and the assignee
+  authority fence (be-035) used to be a pre-read in `cmd/bd`, so a close
+  through `bd serve` (`POST /v0/beads/issues/{id}:close`), `issues:batchClose`,
+  a `close` item of `issues:batchApply`, or a library caller of
+  `issueops.Lifecycle.Close`, `BatchCloser` or `BatchApplier` closed a
+  template, a pinned issue, or a bead another actor holds that `bd close`
+  refused. They now live in the role, inside the close's own transaction, on
+  every backend: a template refuses with `*issueops.TemplateReadOnlyError` (no
+  bypass), and unless `Force` is set a pinned issue refuses with
+  `*issueops.PinnedError` and another actor's bead with
+  `*issueops.CloseNotAssigneeError` (matching `ErrNotOwner`). Over HTTP they
+  are `409` `template_read_only`, `issue_pinned` and `not_assignee` (the
+  holder in `assignee`, also on a batch-close outcome), and the client
+  rebuilds the same typed errors. `bd close` prints the same lines and exits
+  as before, and `bd close --if-revision`, which skipped the guards, now
+  applies them too. Two paths stay outside the guards. The raw storage
+  `CloseIssue`, which the molecule auto-close, a `close` line of `bd batch`
+  and the other closes `cmd/bd` makes outside `bd close` use, runs neither the
+  guards nor close policy on dolt, embedded or proxied; over HTTP it now sends
+  `force`, so there it also stops applying close policy, and only a template
+  refuses. A status update into the done category (`bd update -s closed`, a
+  `PATCH` whose `status` is done, an `update` item of `issues:batchApply`)
+  answers to close policy only, as before, so it still closes a pinned issue
+  or another actor's bead. Migration: HTTP and library callers that close
+  pinned issues or beads another actor holds must send `force` (`Force` on the
+  request), or reclaim the bead first; the close operations never close a
+  template, forced or not (pour it instead).
 
 ### Fixed
 - **An update of a template is now refused for every caller, not only
@@ -235,6 +263,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `POST /v0/beads/issues/{id}:claim` (`issueops.Claimer`) still claims a
   template that a `PATCH` with `claim: true` refuses. Close's guards move to
   the role in their own change (#7425).
+- The dotted-id hierarchy refusal (a child such as `bd-abc.1` may not carry an
+  explicit edge to its own ancestor, other than the parent-child edge to its
+  immediate parent) moved from `cmd/bd` into the library as
+  `issueops.CheckDottedChildDependency` / `*issueops.DottedChildDependencyError`
+  (unwraps to `ErrValidation`). Every `DependencyEditor` (dolt, embedded,
+  unit of work, HTTP) and every `BatchApplier` dep_add item now enforces it, so
+  an HTTP `dependencies:add`, a `batch:apply` edge and `bd create --graph`'s own
+  edges are refused like `bd dep add` (HTTP: 400 `invalid_argument`). `bd dep
+  add`, `bd dep --blocks`, `bd link` and `bd dep add --file` print the same
+  messages as before, and a `bd batch` script's `dep add` line, which neither
+  backend checked, is now refused with that message and rolls the whole batch
+  back. The refusal is decided from the two ids, ahead of every check that
+  reads the stored graph, so for a child whose parent-child edge is already
+  stored (a `bd create --parent` child) an HTTP caller now gets that 400 where
+  it used to get 409 `dependency_cycle` (a blocking type) or
+  `dependency_exists` (any other type).
+
 
 - **`bd delete` no longer rewrites a citation of a surviving child into a
   `[deleted:…]` marker for its parent.**

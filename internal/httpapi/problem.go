@@ -146,6 +146,23 @@ const (
 	// A 409 for CodeNotClosable's reason: the body is well-formed and the
 	// STATE of the named row refuses it.
 	CodeTemplateReadOnly Code = "template_read_only"
+	// CodeIssuePinned is an unforced close of a pinned issue, by either of the
+	// two spellings bd pins with (the `pinned` flag or the `pinned` status).
+	// `force` is the bypass. It is its own code rather than a third
+	// `not_closable` because that code's member-presence discriminator already
+	// reads "no `open_children`" as a live blocker, and a pin is not one.
+	CodeIssuePinned Code = "issue_pinned"
+	// CodeNotAssignee is an unforced close by an actor who is not the issue's
+	// assignee (be-035): an unassigned issue is closable by anyone, an
+	// assigned one by its holder, compared separator-insensitively. `force` is
+	// the bypass. The holder the refusing transaction observed travels in the
+	// `assignee` member, so a client names it without reading `detail`; the
+	// closing actor is the one the request sent.
+	//
+	// It is minted rather than folded into CodeAlreadyClaimed, which a client
+	// maps to a lost CLAIM: answering it for a close would have the client
+	// read the operation, rather than the code, to decide what was refused.
+	CodeNotAssignee Code = "not_assignee"
 	// CodeDependencyCycle covers BOTH never-makes-progress refusals a requested
 	// edge set can earn: a scheduling cycle, and a blocking edge against the
 	// issue's own ancestor or descendant. They are one code because they have
@@ -273,6 +290,8 @@ var codeStatus = map[Code]int{
 	CodeNotClosable:      http.StatusConflict,
 	CodeNotesOverwrite:   http.StatusConflict,
 	CodeTemplateReadOnly: http.StatusConflict,
+	CodeIssuePinned:      http.StatusConflict,
+	CodeNotAssignee:      http.StatusConflict,
 	CodeNotReleasable:    http.StatusConflict,
 	CodeDependencyCycle:  http.StatusConflict,
 	CodeDependencyExists: http.StatusConflict,
@@ -823,7 +842,8 @@ var operationCodes = map[string][]Code{
 	// The NARROWEST write vocabulary on this surface, and the narrowness is the
 	// contract rather than an oversight. A problem document from this operation
 	// means the batch never ran; every refusal an ITEM can earn — not_found for
-	// an id naming no row, not_closable for close policy — travels in that
+	// an id naming no row, not_closable for close policy, template_read_only,
+	// issue_pinned and not_assignee for the close guards — travels in that
 	// item's outcome inside a 200. A 404 here would say the operation went to
 	// the wrong place, and a 409 would say the whole batch was refused, and
 	// neither is ever true of a per-item refusal.
@@ -856,14 +876,18 @@ var operationCodes = map[string][]Code{
 		CodeAlreadyClaimed, CodeNotReleasable, CodePreconditionFailed,
 		CodeBusy, CodeDBUnavailable, CodeInternal,
 	},
-	// TWO 409s, and they answer different questions with `code` as the only
-	// discriminator a client needs.
+	// Several 409s, and they answer different questions with `code` as the
+	// only discriminator a client needs.
 	//
 	// not_closable is close POLICY: an unforced close refused for open children
-	// or for a live blocker. There is no already_claimed here — closing work
-	// somebody else holds is not a refusal on this surface — and the idempotent
-	// re-close is a 200 carrying `already_closed`, the claim's answer to the
-	// same question.
+	// or for a live blocker. The idempotent re-close is a 200 carrying
+	// `already_closed`, the claim's answer to the same question.
+	//
+	// template_read_only, issue_pinned and not_assignee are the CLOSE GUARDS
+	// the role applies before policy, in that order: a template (no bypass), a
+	// pin and closing work somebody else holds (both bypassed by `force`).
+	// There is no already_claimed: that code is a lost claim, and not_assignee
+	// carries the holder in `assignee` itself.
 	//
 	// precondition_failed is `expected_version`'s, in the 409 form for the
 	// reason that code documents, and it is CHECKED FIRST — before policy and
@@ -872,6 +896,7 @@ var operationCodes = map[string][]Code{
 	// members make unrelated claims.
 	OpCloseIssue: {
 		CodeInvalidArgument, CodeUnauthenticated, CodeNotFound, CodeNotClosable, CodePreconditionFailed,
+		CodeTemplateReadOnly, CodeIssuePinned, CodeNotAssignee,
 		CodeBusy, CodeDBUnavailable, CodeInternal,
 	},
 	// ONE 409, and it is a PRECONDITION rather than a policy. Close has a policy
@@ -978,7 +1003,7 @@ var operationCodes = map[string][]Code{
 	OpApplyBatch: {
 		CodeInvalidArgument, CodeUnauthenticated, CodeNotFound,
 		CodePreconditionFailed, CodeNotClosable, CodeAlreadyClaimed, CodeNotesOverwrite, CodeAlreadyExists,
-		CodeTemplateReadOnly,
+		CodeTemplateReadOnly, CodeIssuePinned, CodeNotAssignee,
 		CodeDependencyCycle, CodeDependencyExists,
 		CodeBusy, CodeDBUnavailable, CodeInternal,
 	},
@@ -1525,6 +1550,7 @@ func ClassifyError(err error) Result {
 	// `if` away from a pruned-past checkpoint arriving as a generic 500 on
 	// whichever arm forgot it.
 	var truncated *storage.EventsJournalTruncatedError
+	var notAssignee *issueops.CloseNotAssigneeError
 
 	switch {
 	case err == nil:
@@ -1560,10 +1586,19 @@ func ClassifyError(err error) Result {
 	case errors.Is(err, issueops.ErrCloseBlocked):
 		return closeBlockedResult(err, "issue is blocked", "clear the blocker or close with force")
 
-	// The detail is this server's own words rather than the role's message,
-	// for the reason Problem.detail gives.
+	// The close guards; the first, template read-only, is every update's guard
+	// too. Each detail is this server's own words rather than the role's
+	// message, for the reason Problem.detail gives; the typed members are what
+	// a client reconstructs the refusal from.
 	case errors.Is(err, issueops.ErrTemplateReadOnly):
 		return newResult(CodeTemplateReadOnly, "this issue is a template, and templates are read-only; pour it to create work")
+
+	case errors.Is(err, issueops.ErrPinned):
+		return newResult(CodeIssuePinned, "this issue is pinned; close with force to override")
+
+	case errors.As(err, &notAssignee):
+		return newResult(CodeNotAssignee,
+			"this issue is assigned to another actor; reclaim it, or close with force").WithAssignee(notAssignee.Assignee)
 
 	case errors.Is(err, ErrBusy):
 		res := newResult(CodeBusy, "")

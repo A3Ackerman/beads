@@ -60,6 +60,8 @@ var roleContractCases = []roleContract{
 		RunBatchApplyRefusesAnUnusableRequest,
 		RunBatchApplyUpdateItemsRefuseATemplate,
 		RunBatchApplySplicesTheMetadataOfATemplateItCreates,
+		RunBatchApplyCloseItemsAnswerToTheCloseGuards,
+		RunBatchApplyRefusesADottedChildGatedOnItsOwnParent,
 	),
 
 	roleCases("BatchCloser", "BatchCloser()", oncePerRole,
@@ -84,6 +86,7 @@ var roleContractCases = []roleContract{
 		RunBatchCloserAllRefusedBatchRecordsNoHistory,
 		RunBatchCloserDoesNotMutateTheCallerRequest,
 		RunBatchCloserSettlesTheDependersOfWhatItClosed,
+		RunBatchCloserItemsAnswerToTheCloseGuards,
 	),
 
 	roleCases("BatchCreator", "BatchCreator()", oncePerRole,
@@ -300,6 +303,7 @@ var roleContractCases = []roleContract{
 		RunDependencyEditorAcceptsADiamond,
 		RunDependencyEditorGateScopeFollowsTheEdgeType,
 		RunDependencyEditorAcceptsBlockingAcrossIssueTypes,
+		RunDependencyEditorRefusesADottedChildGatedOnItsOwnParent,
 	),
 
 	// The accessor named here is not an accessor at all, alone among these
@@ -443,6 +447,7 @@ var roleContractCases = []roleContract{
 		RunLifecycleCloseSettlesTheClosedRowItselfAndItsChild,
 		RunLifecycleCloseOnASpawnersLastChildSatisfiesAWaitsForGate,
 		RunLifecycleReopenReblocksItsDependers,
+		RunLifecycleCloseEnforcesTheCloseGuards,
 	),
 
 	// The accessor-reachable half of Lifecycle.Create, moved out of the staging
