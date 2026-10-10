@@ -62,6 +62,7 @@ var roleContractCases = []roleContract{
 		RunBatchApplySplicesTheMetadataOfATemplateItCreates,
 		RunBatchApplyCloseItemsAnswerToTheCloseGuards,
 		RunBatchApplyRefusesADottedChildGatedOnItsOwnParent,
+		RunBatchApplyAppliesTheDefaultPriority,
 	),
 
 	roleCases("BatchCloser", "BatchCloser()", oncePerRole,
@@ -104,6 +105,7 @@ var roleContractCases = []roleContract{
 		RunBatchCreatorRecordsNoHistoryForAnEphemeralBatch,
 		RunBatchCreatorDoesNotMutateTheCallerRequest,
 		RunBatchCreatorEchoesSubSecondTimestamps,
+		RunBatchCreatorAppliesTheDefaultPriority,
 	),
 
 	roleCases("BlockingAnnotator", "BlockingAnnotator()", oncePerRole,
@@ -460,6 +462,7 @@ var roleContractCases = []roleContract{
 		RunLifecycleCreateInheritsParentLabels,
 		RunLifecycleCreateWritesEveryScalarField,
 		RunLifecycleCreateEchoesSubSecondTimestamps,
+		RunLifecycleCreateAppliesTheDefaultPriority,
 	),
 
 	roleCases("LifecycleUpdate", "IssueLifecycle()", oncePerRole,

@@ -313,6 +313,7 @@
 100 65 TestEmbeddedSupersede
 
 100 66 TestEmbeddedCloseBasicIsolatedStores
+100 66 TestEmbeddedShowCommentsTail
 
 100 67 TestEmbeddedAdminCompactReadOnlyAllowed
 100 67 TestEmbeddedAutoImportFallback_ConflictSkip_DoesNotClobber
