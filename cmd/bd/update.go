@@ -493,12 +493,9 @@ pointless).`,
 			issue := result.Issue
 			issueStore := result.Store
 
-			if err := validateIssueUpdatable(id, issue); err != nil {
-				fmt.Fprintf(os.Stderr, "%s\n", err)
-				recordFailure(id, err.Error())
-				closeIfUnmutated(result)
-				continue
-			}
+			// The template guard is the role's (issueops.Lifecycle.Update),
+			// enforced inside the mutation on every route; its refusal is
+			// printed below as the line this command always printed.
 
 			// bd-98s5c: an unguarded assignee update must not silently
 			// overwrite another actor's live claim. Skipped under
@@ -511,7 +508,7 @@ pointless).`,
 			// the actor's own fresh claim. A policy refusal, so it exits 1,
 			// not 13.
 			if newAssignee, ok := updates["assignee"].(string); ok && ifAssignee == nil && !claimFlag && !ifRevisionAlreadyStale(issue, ifRevision) {
-				if err := validateIssueReassignable(id, issue, actor, newAssignee,
+				if err := validateIssueReassignable(id, issue, currentActor(), newAssignee,
 					storeClaimPoolAliases(ctx, issueStore), forceFlag); err != nil {
 					fmt.Fprintf(os.Stderr, "%s\n", err)
 					recordFailure(id, err.Error())
@@ -552,7 +549,7 @@ pointless).`,
 			// through: `--force -s closed` is now a legitimate way to ask for
 			// the close-policy half alone.
 			updateResult, updateErr := runCommandUpdateMutation(opsCtx, ops, commandUpdateMutation{
-				actor:            actor,
+				actor:            currentActor(),
 				issueID:          result.ResolvedID,
 				patch:            patch,
 				claim:            claimFlag,
@@ -577,7 +574,10 @@ pointless).`,
 					}
 				}
 				failureText := fmt.Sprintf("updating issue: %v", updateErr)
-				if errors.Is(updateErr, issueops.ErrNotesOverwrite) {
+				if refusal, ok := templateReadOnlyRefusal(id, updateErr); ok {
+					failureText = refusal.Error()
+					fmt.Fprintf(os.Stderr, "%s\n", refusal)
+				} else if errors.Is(updateErr, issueops.ErrNotesOverwrite) {
 					// The contract's AuthorizeNotesOverwrite fence refused
 					// inside the mutation transaction. Print the advice, not
 					// the raw sentinel.
@@ -602,13 +602,13 @@ pointless).`,
 			}
 			// Audit log key field changes (survives Dolt GC flatten)
 			if patch.Status.Set {
-				audit.LogFieldChange(result.ResolvedID, "status", string(issue.Status), string(patch.Status.Value), actor, "")
+				audit.LogFieldChange(result.ResolvedID, "status", string(issue.Status), string(patch.Status.Value), currentActor(), "")
 			}
 			if patch.Assignee.Set {
-				audit.LogFieldChange(result.ResolvedID, "assignee", issue.Assignee, patch.Assignee.Value, actor, "")
+				audit.LogFieldChange(result.ResolvedID, "assignee", issue.Assignee, patch.Assignee.Value, currentActor(), "")
 			}
 			if patch.Priority.Set {
-				audit.LogFieldChange(result.ResolvedID, "priority", fmt.Sprintf("%d", issue.Priority), fmt.Sprintf("%d", patch.Priority.Value), actor, "")
+				audit.LogFieldChange(result.ResolvedID, "priority", fmt.Sprintf("%d", issue.Priority), fmt.Sprintf("%d", patch.Priority.Value), currentActor(), "")
 			}
 
 			// The operation's own post-state snapshot replaces the re-read.
@@ -642,7 +642,7 @@ pointless).`,
 				if s == nil {
 					continue
 				}
-				if err := commitPendingIfEmbedded(ctx, s, actor, doltAutoCommitParams{
+				if err := commitPendingIfEmbedded(ctx, s, currentActor(), doltAutoCommitParams{
 					Command:  "update",
 					IssueIDs: ids,
 				}); err != nil {
@@ -1116,4 +1116,17 @@ func init() {
 	updateCmd.Flags().StringArray("unset-metadata", nil, "Remove metadata key (repeatable, e.g., --unset-metadata team)")
 	updateCmd.ValidArgsFunction = issueIDCompletion
 	rootCmd.AddCommand(updateCmd)
+}
+
+// templateReadOnlyRefusal reports whether err is the update role's template
+// refusal (issueops.Lifecycle.Update, any route) and, when it is, returns it
+// spelled against id — the argument as the caller typed it, which is what this
+// CLI's template sentence has always named. It is found with errors.Is because
+// the refusal may arrive wrapped by the unit of work or inside the served
+// problem envelope.
+func templateReadOnlyRefusal(id string, err error) (error, bool) {
+	if !errors.Is(err, issueops.ErrTemplateReadOnly) {
+		return nil, false
+	}
+	return &issueops.TemplateReadOnlyError{IssueID: id}, true
 }

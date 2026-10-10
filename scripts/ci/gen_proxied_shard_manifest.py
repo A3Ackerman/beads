@@ -56,7 +56,7 @@ name coverage.
 
 The manifest file holds more than one block (one per total_shards value in
 use): the legacy, frozen 15-shard block pr-risk.yml/main.yml's jobs read, and
-the Bazel-only lane's own block (30 shards as of F2). By default this prints
+the Bazel-only lane's own block (34 shards since 2026-10-09). By default this prints
 only the requested total's block to stdout, which is NOT safe to redirect
 straight into the manifest file (`gen... 30 > file` deletes every other
 block). Use --write to update the file in place instead: it replaces only
@@ -81,6 +81,9 @@ import sys
 default_manifest_path = '.github/scripts/proxied-cmd-test-shards.txt'
 
 func_re = re.compile(r'^func (Test(?:ProxiedServer|ServerMode)[A-Za-z0-9_]+)\(')
+# A shared-server bd init: newSharedProxiedProject(WithHooks) or the root
+# variant, newSharedProxiedRootProject.
+shared_init_re = re.compile(r'newSharedProxied(?:Root)?Project')
 
 
 def discover_inits_cost():
@@ -98,7 +101,7 @@ def discover_inits_cost():
             elif ln.startswith('func '):
                 cur = None
             if cur:
-                costs[cur] += ln.count('newSharedProxiedProject')
+                costs[cur] += len(shared_init_re.findall(ln))
     for k in costs:
         costs[k] = max(costs[k], 1)
     return costs
@@ -219,7 +222,9 @@ def render(total, shards, weights):
         out.append('# TestProxiedServerListComments and')
         out.append('# TestProxiedServerServeRefusesAStreamOnADisabledJournal; and for')
         out.append('# TestProxiedServerOutageReconnectAcceptanceMatrix, pinned to shard 1')
-        out.append('# instead of hashing onto shard 14).')
+        out.append('# instead of hashing onto shard 14; and for TestProxiedServerClose3')
+        out.append('# and TestProxiedServerClose4, the parents #7173 split off')
+        out.append('# TestProxiedServerClose, pinned to shards 13 and 2).')
     else:
         out.append(f'# {total}-shard split for the Bazel-only proxied-server tier')
         out.append('# (bazel-proxied in .github/workflows/bazel.yml), bin-packed')
