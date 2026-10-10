@@ -2734,3 +2734,48 @@ func RunBatchApplyRefusesADottedChildGatedOnItsOwnParent(t *testing.T, ctx conte
 	}
 	assertBatchApplyEdgeCount(t, ctx, fixture, child, parent, 1)
 }
+
+// RunBatchApplyAppliesTheDefaultPriority pins CreateItem.DefaultPriority: a
+// create item that asks for the default stores publicops.DefaultCreatePriority,
+// and one naming priority 0 stores P0. `bd create --graph` sends a node without
+// a priority this way, and so does an HTTP batch apply create item without one.
+// A create item asking for the default while naming a priority is
+// ErrValidation and writes nothing, as it is for Lifecycle.Create.
+func RunBatchApplyAppliesTheDefaultPriority(t *testing.T, ctx context.Context, fixture BatchApplyFixture) {
+	t.Helper()
+	unset := batchApplyMintedIssue("defaulted")
+	unset.Priority = 0
+	zero := batchApplyMintedIssue("critical")
+	zero.Priority = 0
+	result := batchApplyMust(t, ctx, fixture, publicops.ApplyBatchRequest{
+		Actor: "apply-writer",
+		Items: []publicops.ApplyItem{
+			{Kind: publicops.ItemCreate, Create: &publicops.CreateItem{Key: "d", Issue: unset, DefaultPriority: true}},
+			{Kind: publicops.ItemCreate, Create: &publicops.CreateItem{Key: "z", Issue: zero}},
+		},
+	})
+	for key, want := range map[string]int{"d": publicops.DefaultCreatePriority, "z": 0} {
+		id := result.Keys[key]
+		if id == "" {
+			t.Fatalf("key %q bound no id: %v", key, result.Keys)
+		}
+		if got := batchApplyCount(t, ctx, fixture, "SELECT priority FROM issues WHERE id = ?", []any{id}); got != want {
+			t.Errorf("stored priority of %s (%s) = %d, want %d", key, id, got, want)
+		}
+	}
+
+	conflict := fixture.IssuePrefix + "-prio-conflict"
+	clash := batchApplyIssue(conflict, conflict)
+	clash.Priority = 3
+	_, err := fixture.BatchApplier.ApplyBatch(ctx, publicops.ApplyBatchRequest{
+		Actor:         "apply-writer",
+		ForceIDPrefix: true,
+		Items: []publicops.ApplyItem{
+			{Kind: publicops.ItemCreate, Create: &publicops.CreateItem{Key: "c", Issue: clash, DefaultPriority: true}},
+		},
+	})
+	if !errors.Is(err, publicops.ErrValidation) {
+		t.Fatalf("DefaultPriority with priority 3: err = %v, want ErrValidation", err)
+	}
+	assertBatchApplyRowCount(t, ctx, fixture, "issues", conflict, 0)
+}
