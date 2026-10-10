@@ -6,8 +6,9 @@ import (
 )
 
 // ErrTemplateReadOnly is returned when a mutation that guards templates names
-// one. Every update does (Lifecycle.Update, a BatchApplier update item); not
-// every verb does yet (bd-jkp9v3). Templates are read-only: the way to get
+// one. Every update does (Lifecycle.Update, a BatchApplier update item), and so
+// does every close (Lifecycle.Close, BatchCloser, a BatchApplier close item);
+// not every verb does yet (bd-jkp9v3). Templates are read-only: the way to get
 // work out of one is to pour it (`bd mol pour`), which creates new issues and
 // leaves the template untouched. There is no force bypass — no Force flag
 // waives it; only an update that sets UpdateRequest.AllowTemplate (bd label,

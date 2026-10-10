@@ -322,7 +322,6 @@ func TestBazelRetiredLanesCheckListedTestsRan(t *testing.T) {
 	// the shared rationale.
 	liveShardCount := map[string]func(*testing.T) int{
 		"//cmd/bd:bd_proxied_test":                                   bazelProxiedShardCount,
-		"//cmd/bd:bd_embedded_test":                                  bazelEmbeddedCmdShardCount,
 		"//internal/storage/embeddeddolt:embeddeddolt_embedded_test": bazelEmbeddedStorageShardCount,
 		"//internal/storage/dolt:dolt_server_full_test":              bazelServerFullShardCount,
 	}
@@ -342,9 +341,10 @@ func TestBazelRetiredLanesCheckListedTestsRan(t *testing.T) {
 			// check_shard_coverage.py arguments, not independently
 			// hard-coded literals that could drift from BUILD.bazel
 			// unnoticed (S1).
-			{"test-embedded-cmd", "Test", "//cmd/bd:bd_embedded_test", ".github/scripts/embedded-test-shard.sh", -1},
+			// The cmd/bd block is split over embeddedCmdTargets: one
+			// --suite each, SHARDS@OFFSET/TOTAL (added below).
 			{"test-embedded-storage", "Test", "//internal/storage/embeddeddolt:embeddeddolt_embedded_test", ".github/scripts/embedded-storage-test-shard.sh", -1},
-		}, []string{"//internal/storage/embeddeddolt:embeddeddolt_conformance_core_test", "//internal/storage/embeddeddolt:embeddeddolt_conformance_audit_test"}},
+		}, []string{"//internal/storage/embeddeddolt:embeddeddolt_conformance_core_test", "//internal/storage/embeddeddolt:embeddeddolt_conformance_core_slow_test", "//internal/storage/embeddeddolt:embeddeddolt_conformance_audit_test"}},
 		{bazelProxiedJobName, "doltserver-proxied", []suite{
 			// bazel-proxied runs its own duration-balanced manifest block
 			// (scripts/ci/proxied_test_durations.json), not PR Risk's frozen
@@ -365,6 +365,11 @@ func TestBazelRetiredLanesCheckListedTestsRan(t *testing.T) {
 		job := readCIWorkflow(t, bazelWorkflowName).job(t, c.lane)
 		step := job.step(t, "Every listed test ran in its shard")
 		want := []string{"python3 tools/bazel/check_shard_coverage.py", `--bep "$RUNNER_TEMP/bazel-bep.json"`}
+		if c.lane == bazelEmbedJobName {
+			for _, p := range bazelEmbeddedCmdParts(t) {
+				want = append(want, fmt.Sprintf("--suite %s %s %s", p.label, ".github/scripts/embedded-test-shard.sh", p.spec()))
+			}
+		}
 		for _, s := range c.suites {
 			shards := s.shardCount
 			if shards < 0 {
@@ -529,6 +534,51 @@ esac
 		out, err := exec.Command(python, script, "--bep", bep, "--testlogs", logs, "--suite", label, shard, "2", "--whole", "//pkg:w").CombinedOutput()
 		if (err == nil) != c.pass || (c.mention != "" && !strings.Contains(string(out), c.mention)) {
 			t.Errorf("--whole %v: pass = %v, want %v (mention %q):\n%s", c.names, err == nil, c.pass, c.mention, out)
+		}
+	}
+	// A 2-shard block split over two 1-shard targets (SHARDS@OFFSET/TOTAL):
+	// //pkg:p's shard 1 is the script's shard 1, //pkg:q's shard 1 its shard
+	// 2. The targets must tile the block exactly once.
+	splitLogs := filepath.Join(dir, "split")
+	for target, names := range map[string][]string{"p": {"TestA", "TestB"}, "q": {"TestC"}} {
+		d := filepath.Join(splitLogs, "pkg", target)
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		xml := `<testsuites><testsuite name="pkg">`
+		for _, n := range names {
+			xml += `<testcase name="` + n + `"></testcase>`
+		}
+		if err := os.WriteFile(filepath.Join(d, "test.xml"), []byte(xml+`</testsuite></testsuites>`), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	splitBEP := filepath.Join(dir, "split.json")
+	if err := os.WriteFile(splitBEP, []byte(`{"id":{"targetConfigured":{"label":"//pkg:p"}},"configured":{"targetKind":"sh_test rule"}}
+{"id":{"testResult":{"label":"//pkg:p","run":1,"attempt":1}}}
+{"id":{"targetConfigured":{"label":"//pkg:q"}},"configured":{"targetKind":"sh_test rule"}}
+{"id":{"testResult":{"label":"//pkg:q","run":1,"attempt":1}}}
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name    string
+		suites  []string
+		pass    bool
+		mention string
+	}{
+		{"split exact", []string{"//pkg:p", "1@0/2", "//pkg:q", "1@1/2"}, true, ""},
+		{"split shard run twice", []string{"//pkg:p", "1@0/2", "//pkg:q", "1@0/2"}, false, "run by more than one target"},
+		{"split shard run by no target", []string{"//pkg:p", "1@0/2"}, false, "no target runs shard(s) [2]"},
+		{"split range past the total", []string{"//pkg:p", "1@0/2", "//pkg:q", "1@2/2"}, false, "exceed"},
+	} {
+		args := []string{script, "--bep", splitBEP, "--testlogs", splitLogs}
+		for i := 0; i < len(c.suites); i += 2 {
+			args = append(args, "--suite", c.suites[i], shard, c.suites[i+1])
+		}
+		out, err := exec.Command(python, args...).CombinedOutput()
+		if (err == nil) != c.pass || (c.mention != "" && !strings.Contains(string(out), c.mention)) {
+			t.Errorf("%s: pass = %v, want %v (mention %q):\n%s", c.name, err == nil, c.pass, c.mention, out)
 		}
 	}
 	if out, err := exec.Command(python, script, "--bep", writeBEP(2), "--testlogs", filepath.Join(dir, "logs0"), "--suite", label, shard, "2", "--whole", "//pkg:absent").CombinedOutput(); err == nil {
@@ -761,9 +811,10 @@ func TestBazelRetiredLanesCannotBeNarrowed(t *testing.T) {
 		}
 		// go_test_pinned_shard.sh selects and skips by design (each test in
 		// exactly one shard: TestPinnedShardWrapperSplit), and is reviewed
-		// here for the dolt-server-cmd targets only, which are none of the
-		// retired tiers' lanes; pinnedShardWrapperUsers fails if anything
-		// else runs through it.
+		// here for pinnedShardTargets only (the dolt-server-cmd targets and
+		// the embedded lane's httpclient_served_test, whose args are pinned
+		// above); pinnedShardWrapperUsers fails if anything else runs
+		// through it.
 		exempt := filepath.ToSlash(rel) == pinnedShardWrapper
 		if exempt {
 			for _, e := range pinnedShardWrapperUsers(t, root) {
@@ -803,17 +854,31 @@ func TestBazelRetiredLanesCannotBeNarrowed(t *testing.T) {
 		args []string
 		env  map[string]string
 	}
+	embeddedCmdEnv := map[string]string{
+		"BEADS_TEST_BD_BINARY": "$(rlocationpath :bd)", "BEADS_TEST_EMBEDDED_DOLT": "1", "BEADS_TEST_GOFMT": "$(rlocationpath @go_sdk//:bin/gofmt)",
+		// bdInit's schema template and the race runtime's exit sleep:
+		// neither selects or skips a test.
+		"BEADS_TEST_EMBEDDED_SCHEMA_TOOL": "$(rlocationpath //internal/storage/embeddeddolt/cmd:cmd_norace)", "GORACE": "atexit_sleep_ms=0",
+	}
 	want := map[string]target{
 		"//cmd/bd:bd_embedded_test": {
-			[]string{"$(rootpath //:.github/scripts/embedded-test-shard.sh)", "BEADS_TEST_CMD_BINARY", "$(rootpath :bd_test)", "-test.timeout=19m"},
-			map[string]string{"BEADS_TEST_BD_BINARY": "$(rlocationpath :bd)", "BEADS_TEST_EMBEDDED_DOLT": "1", "BEADS_TEST_GOFMT": "$(rlocationpath @go_sdk//:bin/gofmt)"},
+			[]string{"--shard-offset=0", "--shard-total=100", "$(rootpath //:.github/scripts/embedded-test-shard.sh)", "BEADS_TEST_CMD_BINARY", "$(rootpath :bd_test)", "-test.timeout=19m"},
+			embeddedCmdEnv,
+		},
+		"//cmd/bd:bd_embedded_part2_test": {
+			[]string{"--shard-offset=50", "--shard-total=100", "$(rootpath //:.github/scripts/embedded-test-shard.sh)", "BEADS_TEST_CMD_BINARY", "$(rootpath :bd_test)", "-test.timeout=19m"},
+			embeddedCmdEnv,
 		},
 		"//internal/storage/embeddeddolt:embeddeddolt_embedded_test": {
 			[]string{"$(rootpath //:.github/scripts/embedded-storage-test-shard.sh)", "BEADS_TEST_EMBEDDED_TEST_BINARY", "$(rootpath :embeddeddolt_test)", "-test.timeout=19m"},
 			map[string]string{"BEADS_TEST_EMBEDDED_DOLT": "1"},
 		},
 		"//internal/storage/embeddeddolt:embeddeddolt_conformance_core_test": {
-			[]string{"$(rootpath :embeddeddolt_test)", "-test.v", "-test.count=1", "-test.timeout=19m", "-test.run=^TestConformance$$", "-test.skip=^TestConformance$$/^Audit$$"},
+			[]string{"$(rootpath :embeddeddolt_test)", "-test.v", "-test.count=1", "-test.timeout=19m", "-test.run=^TestConformance$$", "-test.skip=^TestConformance$$/^(Audit|ReadyCountsPageChunking|Portable)$$"},
+			map[string]string{"BEADS_TEST_EMBEDDED_DOLT": "1"},
+		},
+		"//internal/storage/embeddeddolt:embeddeddolt_conformance_core_slow_test": {
+			[]string{"$(rootpath :embeddeddolt_test)", "-test.v", "-test.count=1", "-test.timeout=19m", "-test.run=^TestConformance$$/^(ReadyCountsPageChunking|Portable)$$"},
 			map[string]string{"BEADS_TEST_EMBEDDED_DOLT": "1"},
 		},
 		"//internal/storage/embeddeddolt:embeddeddolt_conformance_audit_test": {
@@ -830,7 +895,7 @@ func TestBazelRetiredLanesCannotBeNarrowed(t *testing.T) {
 		// script's switches: required, so a missing engine fails each served
 		// case instead of skipping it.
 		"//internal/httpclient:httpclient_served_test": {
-			[]string{"$(rootpath :httpclient_test)", "-test.v", "-test.count=1", "-test.timeout=19m"},
+			[]string{"$(rootpath :served_pinned_shards.txt)", "$(rootpath :httpclient_test)", "-test.v", "-test.count=1", "-test.timeout=19m"},
 			map[string]string{"BEADS_HTTP_TEST_REQUIRED": "1", "BEADS_TEST_EMBEDDED_DOLT": "1"},
 		},
 		"//cmd/bd:bd_proxied_test": {

@@ -19,7 +19,7 @@ import (
 
 // S3 (F1, mirroring F2's TestProxiedShardManifestGeneratorNotStale below —
 // see that test's doc comment for the full --check rationale, not repeated
-// here): the Bazel-only 50-shard cmd block and 20-shard storage block are
+// here): the Bazel-only 100-shard cmd block and 40-shard storage block are
 // not frozen like their files' legacy 20- and 5-shard blocks.
 // gen_embedded_{cmd,storage}_shard_manifest.py --check verifies only that
 // the committed block names every discovered test exactly once, failing with
@@ -40,6 +40,35 @@ func TestCmdEmbeddedShardManifestGeneratorNotStale(t *testing.T) {
 	cmd.Dir = root
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Errorf("gen_embedded_cmd_shard_manifest.py %s --weights=duration --check: %v\n%s", shards, err, out)
+	}
+}
+
+// TestPackConcurrentModelsSerialAndParallelTests pins
+// _embedded_shard_manifest_lib.py's pack_concurrent: a serial test (no
+// top-level t.Parallel) holds its shard alone for its whole duration, while
+// parallel tests share -test.parallel slots, so four 30s parallel tests fit
+// beside a 90s one in the same wall time. Plain LPT would put the serial
+// test with a parallel one and split the rest evenly by summed duration.
+func TestPackConcurrentModelsSerialAndParallelTests(t *testing.T) {
+	python := requireHostTool(t, "python3")
+	root := sourceRepoRoot(t)
+	const script = `
+import sys
+sys.path.insert(0, 'scripts/ci')
+from _embedded_shard_manifest_lib import pack_concurrent
+costs = {'serial': 100, 'a': 90, 'b': 80, 'c': 30, 'd': 30, 'e': 30, 'f': 30}
+shards, walls = pack_concurrent(costs, 2, {'serial'}, 4)
+print(sorted(map(sorted, shards)), walls)
+`
+	cmd := exec.Command(python, "-c", script)
+	cmd.Dir = root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pack_concurrent: %v\n%s", err, out)
+	}
+	const want = "[['a', 'b', 'c', 'd', 'e', 'f'], ['serial']] [100.0, 90]\n"
+	if string(out) != want {
+		t.Errorf("pack_concurrent = %q, want %q", out, want)
 	}
 }
 
@@ -138,7 +167,7 @@ func TestShardScriptsListOnlyRealTests(t *testing.T) {
 			// duration balancing.
 			totalsSet[bazelEmbeddedCmdShardCount(t)] = true
 		case ".github/scripts/embedded-storage-test-shard.sh":
-			// F1: mirrors the cmd case above for the 20-shard storage block.
+			// F1: mirrors the cmd case above for the 40-shard storage block.
 			totalsSet[bazelEmbeddedStorageShardCount(t)] = true
 		case ".github/scripts/server-storage-test-shard.sh":
 			totalsSet[bazelServerFullShardCount(t)] = true
@@ -220,7 +249,7 @@ func TestShardScriptsListOnlyRealTests(t *testing.T) {
 	}
 }
 
-// S3: the Bazel-only 44-shard block is not frozen like the legacy 15-shard
+// S3: the Bazel-only 34-shard block is not frozen like the legacy 15-shard
 // block (TestShardScriptsListOnlyRealTests's B1 fix catches outright
 // corruption, but not a committed block that has drifted from the currently
 // discovered TestProxiedServer*/TestServerMode* test set, e.g. a test added,
