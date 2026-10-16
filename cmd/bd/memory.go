@@ -269,7 +269,8 @@ func printRememberResult(verb, key, insight string, commitErr error) error {
 // (storage.ErrCommitIndeterminate, such as a connection lost during
 // DOLT_COMMIT). committed stays false beside it, so a consumer that reads only
 // committed never takes a memory that may be uncommitted for a committed one;
-// `bd dolt commit` settles it either way.
+// `bd dolt commit` settles it either way. bd kv set and bd kv clear report
+// through it too: their writes take the same commit (commitKVWrite).
 func memoryCommitFields(payload map[string]interface{}, commitErr error) {
 	if commitErr == nil {
 		return

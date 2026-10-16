@@ -207,11 +207,11 @@ type VersionControl interface {
 	// set dirty — generic Commit() excludes config and silently no-ops.
 	CommitConfigOnly(ctx context.Context, message string) error
 	// CommitConfigUserKVOnly is the scoped commit for writes of user kv.* data
-	// (bd remember, bd forget). In server mode it stages the config table alone
-	// and refuses, committing nothing, when any dirty config row is outside
-	// kv.*, the screen the pre-pull auto-commit applies. The refusal is a
-	// *ConfigCommitRefusedError naming those keys. Embedded mode behaves as
-	// CommitConfigOnly.
+	// (bd remember, bd forget, bd kv set, bd kv clear). In server mode it
+	// stages the config table alone and refuses, committing nothing, when any
+	// dirty config row is outside kv.*, the screen the pre-pull auto-commit
+	// applies. The refusal is a *ConfigCommitRefusedError naming those keys.
+	// Embedded mode behaves as CommitConfigOnly.
 	CommitConfigUserKVOnly(ctx context.Context, message string) error
 	CommitPending(ctx context.Context, actor string) (bool, error)
 	CommitExists(ctx context.Context, commitHash string) (bool, error)

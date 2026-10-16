@@ -36,7 +36,7 @@ func runKVSetProxiedServer(ctx context.Context, key, value string) error {
 	}
 	commandDidWrite.Store(true)
 
-	return printKVSetResult(key, value)
+	return printKVSetResult(key, value, nil)
 }
 
 func runKVGetProxiedServer(ctx context.Context, key string) error {
@@ -72,7 +72,7 @@ func runKVClearProxiedServer(ctx context.Context, key string) error {
 	}
 	commandDidWrite.Store(true)
 
-	return printKVClearResult(key)
+	return printKVClearResult(key, nil)
 }
 
 func runKVListProxiedServer(ctx context.Context, prefix string) error {

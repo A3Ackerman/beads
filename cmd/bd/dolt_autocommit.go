@@ -157,7 +157,8 @@ func commitPendingIfEmbedded(ctx context.Context, st storage.DoltStorage, actor 
 
 // commitConfigWrite creates the Dolt commit for an intentional config-table
 // write on the direct SQL-server route (bd config set/unset/set-many; bd
-// remember/forget go through commitMemoryWrite). Nothing else commits it there
+// remember/forget go through commitMemoryWrite, bd kv set/clear through
+// commitKVWrite). Nothing else commits it there
 // (GH#4078): the store-level writes those verbs reach through their roles
 // commit the SQL transaction only, maybeAutoCommit returns early off the
 // embedded route, and plain Commit excludes config anyway (GH#2455).
@@ -182,9 +183,9 @@ func commitPendingIfEmbedded(ctx context.Context, st storage.DoltStorage, actor 
 // rename-prefix and migrate also write config (issue_prefix, sync.branch) and
 // are deliberately not wired here: they are multi-step operations, and when
 // their config row should become a commit is the GH#2455 question itself.
-// `bd kv set`/`clear` and the kv.memory rows `bd import` writes are not wired
-// here yet either, so on this route they stay in the working set until a later
-// commit stages config, such as `bd dolt commit`.
+// The kv.memory rows `bd import` writes are not wired here yet either, so on
+// this route they stay in the working set until a later commit stages config,
+// such as `bd dolt commit`.
 func commitConfigWrite(ctx context.Context, st storage.DoltStorage, command string) error {
 	if err := commitConfigTable(ctx, st, command, storage.DoltStorage.CommitConfigOnly); err != nil {
 		return fmt.Errorf("committing config write: %w", err)
@@ -200,6 +201,17 @@ func commitConfigWrite(ctx context.Context, st storage.DoltStorage, command stri
 func commitMemoryWrite(ctx context.Context, st storage.DoltStorage, command string) error {
 	if err := commitConfigTable(ctx, st, command, storage.DoltStorage.CommitConfigUserKVOnly); err != nil {
 		return fmt.Errorf("committing memory write: %w", err)
+	}
+	return nil
+}
+
+// commitKVWrite is commitMemoryWrite for bd kv set/clear (GH#7523). A kv row is
+// user kv.* data, the plane memories live in, so it takes the same kv.*-screened
+// commit, and its callers report a refusal or a failure the same way: as a
+// warning, because by then the write has landed.
+func commitKVWrite(ctx context.Context, st storage.DoltStorage, command string) error {
+	if err := commitConfigTable(ctx, st, command, storage.DoltStorage.CommitConfigUserKVOnly); err != nil {
+		return fmt.Errorf("committing kv write: %w", err)
 	}
 	return nil
 }

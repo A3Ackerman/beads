@@ -51,13 +51,18 @@ func validateKVKey(key string) error {
 }
 
 // printKVSetResult renders the `bd kv set` success output. Shared by the
-// classic and proxied-server paths so the output shape cannot drift.
-func printKVSetResult(key, value string) error {
+// classic and proxied-server paths so the output shape cannot drift. commitErr
+// is the direct route's commit failure, if any (the proxied route's unit of
+// work commits the write itself and passes nil); the value is stored either
+// way.
+func printKVSetResult(key, value string, commitErr error) error {
 	if jsonOutput {
-		return outputJSON(map[string]string{
+		payload := map[string]interface{}{
 			"key":   key,
 			"value": value,
-		})
+		}
+		memoryCommitFields(payload, commitErr)
+		return outputJSON(payload)
 	}
 	fmt.Printf("Set %s = %s\n", key, value)
 	return nil
@@ -88,13 +93,15 @@ func printKVGetResult(key, value string) error {
 }
 
 // printKVClearResult renders the `bd kv clear` success output. Shared by the
-// classic and proxied-server paths.
-func printKVClearResult(key string) error {
+// classic and proxied-server paths. commitErr is as for printKVSetResult.
+func printKVClearResult(key string, commitErr error) error {
 	if jsonOutput {
-		return outputJSON(map[string]string{
+		payload := map[string]interface{}{
 			"key":     key,
 			"deleted": "true",
-		})
+		}
+		memoryCommitFields(payload, commitErr)
+		return outputJSON(payload)
 	}
 	fmt.Printf("Cleared %s\n", key)
 	return nil
@@ -266,8 +273,16 @@ Examples:
 		if err := store.SetConfig(ctx, storageKey, value); err != nil {
 			return HandleErrorRespectJSON("setting key: %v", err)
 		}
+		noteDirectConfigWrite()
+		// The value is stored by now, so a commit the kv.* screen refuses or
+		// that fails is a warning, not the command's failure, as for bd
+		// remember (GH#7523).
+		commitErr := commitKVWrite(ctx, store, "kv set")
+		if commitErr != nil {
+			WarnError("%v", commitErr)
+		}
 
-		return printKVSetResult(key, value)
+		return printKVSetResult(key, value, commitErr)
 	},
 }
 
@@ -354,8 +369,15 @@ Examples:
 		if err := store.DeleteConfig(ctx, storageKey); err != nil {
 			return HandleErrorRespectJSON("deleting key: %v", err)
 		}
+		noteDirectConfigWrite()
+		// As for kv set: the delete landed, so a refused or failed commit
+		// warns and the command still succeeds.
+		commitErr := commitKVWrite(ctx, store, "kv clear")
+		if commitErr != nil {
+			WarnError("%v", commitErr)
+		}
 
-		return printKVClearResult(key)
+		return printKVClearResult(key, commitErr)
 	},
 }
 
