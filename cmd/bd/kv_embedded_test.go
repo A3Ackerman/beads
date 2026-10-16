@@ -7,10 +7,14 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/steveyegge/beads/internal/configfile"
+	"github.com/steveyegge/beads/internal/storage/embeddeddolt"
 )
 
 // bdKV runs "bd kv" with the given args and returns stdout.
@@ -74,6 +78,28 @@ func bdKVListJSON(t *testing.T, bd, dir string, extraArgs ...string) map[string]
 		}
 	}
 	return m
+}
+
+// embeddedConfigDirty reports whether the config table has uncommitted
+// changes in an embedded workspace's working set, read with SQL beneath every
+// bd code path, so no bd command runs between a write and this observation.
+func embeddedConfigDirty(t *testing.T, beadsDir string) bool {
+	t.Helper()
+	cfg, _ := configfile.Load(beadsDir)
+	database := ""
+	if cfg != nil {
+		database = cfg.GetDoltDatabase()
+	}
+	db, cleanup, err := embeddeddolt.OpenSQL(t.Context(), filepath.Join(beadsDir, "embeddeddolt"), database, "main")
+	if err != nil {
+		t.Fatalf("OpenSQL: %v", err)
+	}
+	defer cleanup()
+	var count int
+	if err := db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM dolt_status WHERE table_name = 'config'").Scan(&count); err != nil {
+		t.Fatalf("query dolt_status: %v", err)
+	}
+	return count > 0
 }
 
 func TestEmbeddedKV(t *testing.T) {
@@ -163,6 +189,44 @@ func TestEmbeddedKV(t *testing.T) {
 		m := bdKVListJSON(t, bd, dir)
 		if _, ok := m["clearme"]; ok {
 			t.Error("expected clearme to be absent from kv list after clear")
+		}
+	})
+
+	// THE AUTO-COMMIT EPILOGUE (GH#7523). A direct-route kv write lands in the
+	// Dolt working set, and in embedded mode the PersistentPostRun auto-commit
+	// is what commits it, keyed on the invocation having marked itself as a
+	// write. bd kv set and bd kv clear never did, so their rows sat in the
+	// working set while bd config set and bd remember got their commits — and
+	// every assertion above still passed, because a working-set row reads and
+	// lists exactly like a committed one. dolt_log and dolt_status are the
+	// only places the difference shows.
+	//
+	// Its own workspace, so the counts are deterministic (the pattern
+	// TestEmbeddedMemory's write_verbs_flag_the_auto_commit_epilogue uses).
+	t.Run("write_verbs_commit_their_config_writes", func(t *testing.T) {
+		edir, ebeads, _ := bdInit(t, bd, "--prefix", "kc")
+
+		// Warm-up write: a fresh workspace's first command may commit
+		// bookkeeping of its own, which is not what this is measuring.
+		bdKV(t, bd, edir, "set", "kv-commit-warmup", "warm the workspace up")
+
+		before := countMemoryDoltCommits(t, ebeads)
+		bdKV(t, bd, edir, "set", "kv-commit-subject", "committed, not just stored")
+		afterSet := countMemoryDoltCommits(t, ebeads)
+		if got := afterSet - before; got != 1 {
+			t.Errorf("bd kv set: dolt_log %d -> %d (delta %d), want exactly one auto-commit", before, afterSet, got)
+		}
+		if embeddedConfigDirty(t, ebeads) {
+			t.Errorf("bd kv set left the config table modified in the working set")
+		}
+
+		bdKV(t, bd, edir, "clear", "kv-commit-subject")
+		afterClear := countMemoryDoltCommits(t, ebeads)
+		if got := afterClear - afterSet; got != 1 {
+			t.Errorf("bd kv clear: dolt_log %d -> %d (delta %d), want exactly one auto-commit", afterSet, afterClear, got)
+		}
+		if embeddedConfigDirty(t, ebeads) {
+			t.Errorf("bd kv clear left the config table modified in the working set")
 		}
 	})
 
