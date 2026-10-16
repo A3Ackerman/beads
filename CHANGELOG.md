@@ -822,6 +822,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   also commits its delete of a credential row an older bd stored in the
   database, so HEAD, which `bd dolt push` publishes, no longer keeps it
   ([#4078](https://github.com/gastownhall/beads/issues/4078)).
+- **`bd kv set` and `bd kv clear` commit their writes.** Both wrote the
+  `config` table without marking the command as a write, so nothing
+  committed them: in embedded mode the post-command auto-commit that
+  `bd config set` and `bd remember` get never ran, and on the direct
+  SQL-server route the row stayed in the working set, where `bd dolt push`
+  does not carry it, until a `bd dolt commit`. They now commit like
+  `bd remember` and `bd forget`: in embedded mode through the post-command
+  auto-commit, and on the SQL-server route right away, through the same
+  scoped commit that takes only user `kv.*` rows with it. `dolt.auto-commit`
+  `batch` and `off` defer both, as they defer every other write. When an
+  internal config key is dirty, the value is still stored but not
+  committed: the command warns on stderr with the keys named and exits 0,
+  and `--json` adds `committed: false`, `commit_error` and
+  `dirty_config_keys`
+  ([#7523](https://github.com/gastownhall/beads/issues/7523)).
 
 - **PRs based on `hotfix/**` branches now run full CI, not just
   cross-version historical smokes and triage labeling.** `pr.yml`,
